@@ -19,6 +19,12 @@
         includeEmulator = false;
         includeSystemImages = false;
       };
+      androidSdkRoot = "${androidComposition.androidsdk}/libexec/android-sdk";
+      androidStudioLauncher = pkgs.writeShellScript "partner-watch-android-studio" ''
+        export ANDROID_HOME="${androidSdkRoot}"
+        export ANDROID_SDK_ROOT="${androidSdkRoot}"
+        exec "${pkgs.android-studio}/bin/android-studio" "$@"
+      '';
     in {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -28,13 +34,13 @@
           android-tools
         ];
 
-        ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
-        ANDROID_SDK_ROOT = "${androidComposition.androidsdk}/libexec/android-sdk";
+        ANDROID_HOME = androidSdkRoot;
+        ANDROID_SDK_ROOT = androidSdkRoot;
       };
 
       apps.${system}.android-studio = {
         type = "app";
-        program = "${pkgs.android-studio}/bin/android-studio";
+        program = "${androidStudioLauncher}";
       };
     };
 }
