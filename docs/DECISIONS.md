@@ -145,3 +145,25 @@
 - 状態: 確定
 - 決定: サーバーの公開ホスト名を`partner-watch.kowerkoint.com`とする。
 - 影響: アプリへのハードコードはせず、利用者がこのURLを初回設定時に入力する。
+
+## D-020: Androidとサーバーを同一リポジトリで管理する
+
+- 日付: 2026-08-30
+- 状態: 確定
+- 決定: `android/`、`server/`、`deploy/`、`docs/`を持つモノレポ構成にする。
+- 理由: AndroidとサーバーのAPI変更、デプロイ設定、設計文書を同じ変更単位で管理できる。
+
+## D-021: Nix開発環境をAndroidとサーバーで分離する
+
+- 日付: 2026-08-30
+- 状態: 確定
+- 決定: `android/flake.nix`と`server/flake.nix`を個別に置く。
+- 決定: AndroidのCLI開発シェルにはJDK、Gradle、SDK、ADBを含め、Android Studioは必要時だけ別のflake appとして起動する。
+- 理由: サーバー開発にAndroid SDKを要求せず、CLIビルドのたびにAndroid StudioのGUI依存一式を構築しないため。
+
+## D-022: Android 16を対象にしつつAPI 37でコンパイルする
+
+- 日付: 2026-08-30
+- 状態: 確定
+- 決定: `minSdk`と`targetSdk`は36、`compileSdk`は37とする。
+- 理由: 対象端末の下限をAndroid 16に維持しながら、現行安定版AndroidXが要求するコンパイルSDKを満たすため。

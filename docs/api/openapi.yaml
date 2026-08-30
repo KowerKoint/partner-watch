@@ -1,0 +1,59 @@
+openapi: 3.1.0
+info:
+  title: Partner Watch API
+  version: 0.1.0
+  description: API contract under development. Undocumented routes are not public API.
+servers:
+  - url: https://partner-watch.kowerkoint.com
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server is accepting requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/enrollments:
+    post:
+      operationId: enrollDevice
+      description: One-time enrollment. Invalid requests deliberately return 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollmentRequest"
+      responses:
+        "201":
+          description: Device enrolled.
+        "404":
+          description: Enrollment endpoint or invitation was not found.
+components:
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    EnrollmentRequest:
+      type: object
+      additionalProperties: false
+      required: [invitationToken, deviceName, publicKey]
+      properties:
+        invitationToken:
+          type: string
+          minLength: 43
+          maxLength: 128
+        deviceName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        publicKey:
+          type: string
+          description: Base64url-encoded device authentication public key.

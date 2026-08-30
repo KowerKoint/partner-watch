@@ -35,6 +35,7 @@ Android B ── HTTPS / WebSocket ──┘                         └── �
 | 言語 | Kotlin | 確定 | Android標準で、OS APIを直接扱いやすい |
 | UI | Jetpack Compose + Material 3 | 確定 | 小規模な設定・状態画面を少ないコードで構築できる |
 | 最小SDK | API 36（Android 16） | 確定 | 利用予定端末に合わせ、旧OS互換コードを持たない |
+| コンパイルSDK | API 37 | 確定 | 現行AndroidX安定版の要件を満たす。対象OS下限とtarget SDKはAPI 36のまま維持する |
 | 画面撮影 | `AccessibilityService.takeScreenshot()` | 仮決定 | 対象端末で毎回MediaProjection確認を出さずに撮影できる |
 | バックグラウンド処理 | Foreground Service + FCM + WorkManager | 確定 | 常時接続、切断復帰、遅延処理で役割を分ける |
 | HTTP通信 | OkHttp | 仮決定 | HTTPとWebSocketを同じクライアントで扱える |
@@ -158,6 +159,7 @@ Pixel 8aは1080×2400、Galaxy A25 5Gは1080×2340で、約253万～259万画素
 1. Pixel 8aとGalaxy A25 5Gそれぞれで必要な省電力除外設定。事前決定ではなく実機検証で確定する。
 2. JPEG品質85での実際のファイルサイズと視認性。実機検証結果により変更できる。
 3. Dockerイメージをローカルビルドするか、プライベートレジストリへ置くか。
+4. 2026年9月以降のAndroid開発者確認制度について、個人配布APKの登録・署名手順を実機導入前に確認する。
 
 ## 11. 初期リリース範囲
 

@@ -1,0 +1,8 @@
+.git
+.gitignore
+.golangci.yml
+bin/
+coverage.out
+flake.nix
+flake.lock
+README.md
