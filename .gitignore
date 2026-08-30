@@ -1,0 +1,31 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Go
+server/bin/
+server/coverage.out
+
+# Runtime data and secrets
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+firebase-service-account*.json
+*.jks
+*.keystore
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+
+# Local tooling
+.agents/
+.codex/
