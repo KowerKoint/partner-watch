@@ -8,8 +8,37 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.time.Instant
+
+data class CreatedCaptureRequest(val requestId: String, val expiresAt: Instant)
+
+sealed class CaptureRequestException(message: String) : IOException(message) {
+    class RateLimited : CaptureRequestException("撮影要求の回数制限に達しました")
+    class PartnerUnavailable : CaptureRequestException("相手の端末がまだ登録されていません")
+    class Rejected : CaptureRequestException("撮影要求が拒否されました")
+}
 
 class CaptureApi(private val client: OkHttpClient = OkHttpClient()) {
+    suspend fun create(session: DeviceSession): CreatedCaptureRequest = withContext(Dispatchers.IO) {
+        val url = session.serverUrl.resolve("v1/capture-requests") ?: throw IOException("要求URLを作成できません")
+        val request = Request.Builder().url(url).header("Authorization", "Bearer ${session.credential}")
+            .post(ByteArray(0).toRequestBody(null)).build()
+        client.newCall(request).execute().use { response ->
+            when (response.code) {
+                409 -> throw CaptureRequestException.PartnerUnavailable()
+                429 -> throw CaptureRequestException.RateLimited()
+            }
+            if (response.code != 201) throw CaptureRequestException.Rejected()
+            parseCreated(response.body.string())
+        }
+    }
+
+    internal fun parseCreated(value: String): CreatedCaptureRequest = try {
+        val json = JSONObject(value)
+        CreatedCaptureRequest(json.getString("requestId"), Instant.parse(json.getString("expiresAt")))
+            .also { require(it.requestId.isNotBlank()) }
+    } catch (_: Exception) { throw CaptureRequestException.Rejected() }
+
     suspend fun reportReady(session: DeviceSession, requestId: String, imageId: String) =
         report(session, requestId, "READY", imageId, "")
 

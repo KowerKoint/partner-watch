@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
                     onOpenAccessibilitySettings = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
+                    onRequestCapture = viewModel::requestCapture,
+                    onSavePhoto = viewModel::saveReceivedPhoto,
                 )
             }
         }

@@ -54,6 +54,15 @@ internal fun parseCaptureRequestedEvent(text: String): CaptureRequestedEvent? {
     return CaptureRequestedEvent(requestId, expiresAt).takeIf { requestId.isNotBlank() }
 }
 
+internal fun parseCaptureCompletedEvent(text: String): CaptureCompletedEvent? {
+    val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+    if (json.optString("type") != "capture.completed") return null
+    return CaptureCompletedEvent(
+        json.optString("requestId"), json.optString("status"),
+        json.optString("imageId"), json.optString("failure"),
+    ).takeIf { it.requestId.isNotBlank() && it.status in setOf("READY", "FAILED", "TIMEOUT") }
+}
+
 class PartnerConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient()
@@ -122,6 +131,7 @@ class PartnerConnectionService : Service() {
     }
 
     private fun handleEvent(session: DeviceSession, text: String) {
+        parseCaptureCompletedEvent(text)?.let { CaptureEventBus.publish(it); return }
         val event = parseCaptureRequestedEvent(text) ?: return
         if (!event.expiresAt.isAfter(Instant.now())) return
         scope.launch {

@@ -1,5 +1,7 @@
 package com.kowerkoint.partnerwatch.ui
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +24,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -38,6 +43,8 @@ fun EnrollmentScreen(
     onEnroll: () -> Unit,
     onCaptureAcceptingChanged: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onRequestCapture: () -> Unit,
+    onSavePhoto: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -56,6 +63,8 @@ fun EnrollmentScreen(
                 state = state,
                 onCaptureAcceptingChanged = onCaptureAcceptingChanged,
                 onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                onRequestCapture = onRequestCapture,
+                onSavePhoto = onSavePhoto,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -143,6 +152,8 @@ private fun RegisteredContent(
     state: EnrollmentUiState.Registered,
     onCaptureAcceptingChanged: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onRequestCapture: () -> Unit,
+    onSavePhoto: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -151,6 +162,39 @@ private fun RegisteredContent(
     ) {
         Text("端末の設定", style = MaterialTheme.typography.headlineMedium)
         Text("この端末はPartner Watchに登録されています。")
+        HorizontalDivider()
+        Text("相手の画面", style = MaterialTheme.typography.titleLarge)
+        Button(
+            onClick = onRequestCapture,
+            enabled = state.capture !is CaptureUiState.Waiting,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (state.capture is CaptureUiState.Waiting) "撮影を待っています…" else "スクリーンショットを撮影")
+        }
+        when (val capture = state.capture) {
+            CaptureUiState.Idle -> Text("相手が撮影受付を有効にしている場合だけ撮影されます。")
+            is CaptureUiState.Waiting -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            is CaptureUiState.Error -> Text(capture.message, color = MaterialTheme.colorScheme.error)
+            is CaptureUiState.Received -> {
+                val bitmap = remember(capture.jpeg) {
+                    BitmapFactory.decodeByteArray(capture.jpeg, 0, capture.jpeg.size)?.asImageBitmap()
+                }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "取得したスクリーンショット",
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.FillWidth,
+                    )
+                    Button(onClick = onSavePhoto, modifier = Modifier.fillMaxWidth()) {
+                        Text("写真コレクションへ保存")
+                    }
+                } else {
+                    Text("画像を表示できませんでした", color = MaterialTheme.colorScheme.error)
+                }
+                capture.savedMessage?.let { Text(it) }
+            }
+        }
         HorizontalDivider()
         Text("画面撮影", style = MaterialTheme.typography.titleLarge)
         Row(
@@ -213,6 +257,8 @@ private fun EnrollmentFormPreview() {
             onEnroll = {},
             onCaptureAcceptingChanged = {},
             onOpenAccessibilitySettings = {},
+            onRequestCapture = {},
+            onSavePhoto = {},
         )
     }
 }

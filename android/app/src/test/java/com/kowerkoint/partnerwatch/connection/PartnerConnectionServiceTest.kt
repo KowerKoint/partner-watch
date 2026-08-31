@@ -20,4 +20,12 @@ class PartnerConnectionServiceTest {
         assertNull(parseCaptureRequestedEvent("not-json"))
         assertNull(parseCaptureRequestedEvent("""{"type":"capture.completed"}"""))
     }
+
+    @Test
+    fun parsesCompletedEvent() {
+        val event = parseCaptureCompletedEvent(
+            """{"type":"capture.completed","requestId":"request","status":"READY","imageId":"image"}""",
+        )
+        assertEquals("image", event?.imageId)
+    }
 }
