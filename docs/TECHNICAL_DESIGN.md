@@ -37,7 +37,7 @@ Android B ── HTTPS / WebSocket ──┘                         └── �
 | 最小SDK | API 36（Android 16） | 確定 | 利用予定端末に合わせ、旧OS互換コードを持たない |
 | コンパイルSDK | API 37 | 確定 | 現行AndroidX安定版の要件を満たす。対象OS下限とtarget SDKはAPI 36のまま維持する |
 | 画面撮影 | `AccessibilityService.takeScreenshot()` | 仮決定 | 対象端末で毎回MediaProjection確認を出さずに撮影できる |
-| バックグラウンド処理 | Foreground Service + FCM + WorkManager | 確定 | 常時接続、切断復帰、遅延処理で役割を分ける |
+| バックグラウンド処理 | specialUse Foreground Service + FCM + WorkManager | 確定 | 常時接続、切断復帰、遅延処理で役割を分ける |
 | HTTP通信 | OkHttp | 仮決定 | HTTPとWebSocketを同じクライアントで扱える |
 | ローカル設定 | DataStore | 仮決定 | 小規模な設定値と状態の保存に適する |
 | 秘密情報 | Android Keystore | 確定 | 認証鍵や暗号鍵を通常ファイルとして保存しない |
@@ -49,6 +49,8 @@ Accessibility Serviceは、初回セットアップ時に各利用者が明示�
 サービスは`canTakeScreenshot`だけを宣言し、画面内容を解析するためのウィンドウ取得権限は要求しない。撮影結果の`HardwareBuffer`は直ちにソフトウェアBitmapへコピーして閉じ、品質85のJPEGへ変換後にBitmapも破棄する。撮影受付設定の既定値は拒否とし、DataStoreへ保持する。受付が有効でもAccessibility Serviceが停止中なら撮影せず`SERVICE_UNAVAILABLE`を返す。
 
 Foreground Serviceは実行中であることを示す常時通知を表示する。OSに隠れて監視する動作は設計しない。
+
+常時WebSocketはAndroid 15以降で24時間中6時間に制限される`dataSync`ではなく、用途説明をManifestへ記載する`specialUse` Foreground Serviceで維持する。登録済み画面を利用者が開いた時に開始し、切断時は1秒から最大60秒の指数バックオフで再接続する。Android 13以降では通知権限も要求するが、拒否されてもOSのForeground Service管理画面から稼働を確認できる。
 
 ### サーバー
 

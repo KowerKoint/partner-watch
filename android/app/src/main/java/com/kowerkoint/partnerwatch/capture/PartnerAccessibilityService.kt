@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 enum class CaptureFailure {
+    LOCKED,
     SERVICE_UNAVAILABLE,
     CAPTURE_PROTECTED,
     RATE_LIMITED,

@@ -4,6 +4,13 @@ import android.graphics.Color
 import android.os.Bundle
 import android.content.Intent
 import android.provider.Settings
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
+import androidx.core.content.ContextCompat
+import com.kowerkoint.partnerwatch.connection.PartnerConnectionService
+import com.kowerkoint.partnerwatch.ui.EnrollmentUiState
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -22,10 +29,29 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
+        val notificationPermission = registerForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { }
         setContent {
             PartnerWatchTheme {
                 val viewModel: EnrollmentViewModel = viewModel()
                 val state = viewModel.state.collectAsStateWithLifecycle()
+                val isRegistered = state.value is EnrollmentUiState.Registered
+                LaunchedEffect(isRegistered) {
+                    if (isRegistered) {
+                        if (ContextCompat.checkSelfPermission(
+                                this@MainActivity,
+                                Manifest.permission.POST_NOTIFICATIONS,
+                            ) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        ContextCompat.startForegroundService(
+                            this@MainActivity,
+                            Intent(this@MainActivity, PartnerConnectionService::class.java),
+                        )
+                    }
+                }
                 EnrollmentScreen(
                     state = state.value,
                     onServerUrlChanged = viewModel::updateServerUrl,
