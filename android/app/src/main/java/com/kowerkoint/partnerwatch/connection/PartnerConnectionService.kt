@@ -86,9 +86,9 @@ class PartnerConnectionService : Service() {
             applicationContext, CapturePreferences(applicationContext), JpegEncoder(),
             ImageRepository(ImageApi(client), sessions),
         )
+        notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
         createCaptureNotificationChannel()
-        notificationManager = getSystemService(NotificationManager::class.java)
         pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
