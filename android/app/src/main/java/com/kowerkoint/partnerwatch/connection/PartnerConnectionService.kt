@@ -118,7 +118,8 @@ class PartnerConnectionService : Service() {
 
     private suspend fun connectOnce(session: DeviceSession) {
         val httpUrl = session.serverUrl.resolve("v1/events") ?: error("イベントURLが不正です")
-        val wsUrl = httpUrl.newBuilder().scheme("wss").build()
+        // OkHttp's WebSocket client accepts an http/https URL and performs the upgrade itself.
+        val wsUrl = httpUrl.newBuilder().scheme("https").build()
         val closed = CompletableDeferred<Unit>()
         val request = Request.Builder().url(wsUrl)
             .header("Authorization", "Bearer ${session.credential}").build()
