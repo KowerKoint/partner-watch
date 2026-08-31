@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = database.Close() }()
+	go cleanupExpiredImages(database, logger)
 
 	server := &http.Server{
 		Addr:              address,
@@ -34,6 +36,23 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+func cleanupExpiredImages(database *store.Store, logger *slog.Logger) {
+	cleanup := func() {
+		count, err := database.DeleteExpiredImages(context.Background())
+		if err != nil {
+			logger.Error("failed to delete expired images", "error", err)
+		} else if count > 0 {
+			logger.Info("deleted expired images", "count", count)
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		cleanup()
 	}
 }
 

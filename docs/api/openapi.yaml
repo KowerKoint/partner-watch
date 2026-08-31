@@ -41,7 +41,64 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Enrollment endpoint or invitation was not found.
+  /v1/images:
+    post:
+      operationId: uploadImage
+      description: Uploads a JPEG for the other device in the pair. Images expire after one hour.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema:
+              type: string
+              format: binary
+              maxLength: 10485760
+      responses:
+        "201":
+          description: Image stored temporarily.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadedImage"
+        "400":
+          description: The body is not a valid JPEG or exceeds the pixel limit.
+        "401":
+          description: Device credential is invalid.
+        "413":
+          description: Image exceeds 10 MiB.
+        "415":
+          description: Content-Type is not image/jpeg.
+  /v1/images/{imageId}:
+    get:
+      operationId: downloadImage
+      description: Returns an image once to the paired device and immediately removes it from the server.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: imageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: JPEG image. A successful claim consumes the image.
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Device credential is invalid.
+        "404":
+          description: Image does not exist, expired, was already retrieved, or belongs to another pair/device.
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   schemas:
     Health:
       type: object
@@ -83,6 +140,19 @@ components:
         credential:
           type: string
           description: Device credential returned once at enrollment.
+    UploadedImage:
+      type: object
+      additionalProperties: false
+      required: [imageId, createdAt, expiresAt]
+      properties:
+        imageId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
     Error:
       type: object
       additionalProperties: false

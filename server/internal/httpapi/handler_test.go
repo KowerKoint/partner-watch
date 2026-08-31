@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,13 +9,42 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kowerkoint/partner-watch/server/internal/store"
 )
+
+type fakeImageBackend struct {
+	fakeEnroller
+	savedData []byte
+	taken     store.Image
+}
+
+func (f *fakeImageBackend) AuthenticateDevice(_ context.Context, credential string) (string, error) {
+	if credential != "valid-credential" {
+		return "", store.ErrUnauthorized
+	}
+	return "device-id", nil
+}
+
+func (f *fakeImageBackend) SaveImage(_ context.Context, _ string, data []byte, _, _ int) (store.Image, error) {
+	f.savedData = append([]byte(nil), data...)
+	return store.Image{ID: "image-id", CreatedAt: time.Unix(1, 0).UTC(), ExpiresAt: time.Unix(3601, 0).UTC()}, nil
+}
+
+func (f *fakeImageBackend) TakeImage(_ context.Context, _, imageID string) (store.Image, error) {
+	if imageID != "image-id" {
+		return store.Image{}, store.ErrImageNotFound
+	}
+	return f.taken, nil
+}
 
 type fakeEnroller struct {
 	result store.Enrollment
@@ -107,4 +137,58 @@ func TestMalformedEnrollmentReturnsBadRequest(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
+}
+
+func TestUploadAndDownloadImage(t *testing.T) {
+	jpegData := testJPEG(t, 16, 9)
+	backend := &fakeImageBackend{taken: store.Image{ID: "image-id", Data: jpegData}}
+	upload := httptest.NewRequest(http.MethodPost, "/v1/images", bytes.NewReader(jpegData))
+	upload.Header.Set("Authorization", "Bearer valid-credential")
+	upload.Header.Set("Content-Type", "image/jpeg")
+	uploadResponse := httptest.NewRecorder()
+	NewHandler(backend).ServeHTTP(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d; body = %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	if !bytes.Equal(backend.savedData, jpegData) {
+		t.Fatal("uploaded JPEG was not passed to storage")
+	}
+
+	download := httptest.NewRequest(http.MethodGet, "/v1/images/image-id", nil)
+	download.Header.Set("Authorization", "Bearer valid-credential")
+	downloadResponse := httptest.NewRecorder()
+	NewHandler(backend).ServeHTTP(downloadResponse, download)
+	if downloadResponse.Code != http.StatusOK || !bytes.Equal(downloadResponse.Body.Bytes(), jpegData) {
+		t.Fatalf("download status = %d, bytes = %d", downloadResponse.Code, downloadResponse.Body.Len())
+	}
+}
+
+func TestImageEndpointsRequireAuthenticationAndJPEG(t *testing.T) {
+	backend := &fakeImageBackend{}
+	unauthorized := httptest.NewRequest(http.MethodPost, "/v1/images", strings.NewReader("data"))
+	unauthorizedResponse := httptest.NewRecorder()
+	NewHandler(backend).ServeHTTP(unauthorizedResponse, unauthorized)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorizedResponse.Code)
+	}
+
+	invalid := httptest.NewRequest(http.MethodPost, "/v1/images", strings.NewReader("not jpeg"))
+	invalid.Header.Set("Authorization", "Bearer valid-credential")
+	invalid.Header.Set("Content-Type", "image/jpeg")
+	invalidResponse := httptest.NewRecorder()
+	NewHandler(backend).ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JPEG status = %d", invalidResponse.Code)
+	}
+}
+
+func testJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	bitmap := image.NewRGBA(image.Rect(0, 0, width, height))
+	bitmap.Set(0, 0, color.White)
+	var buffer bytes.Buffer
+	if err := jpeg.Encode(&buffer, bitmap, nil); err != nil {
+		t.Fatalf("encode JPEG: %v", err)
+	}
+	return buffer.Bytes()
 }
