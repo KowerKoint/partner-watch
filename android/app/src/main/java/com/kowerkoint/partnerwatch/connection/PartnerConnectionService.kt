@@ -108,8 +108,8 @@ class PartnerConnectionService : Service() {
                 connectOnce(sessions.load())
                 delay(1_000L)
                 backoff = 1_000L
-            } catch (_: Exception) {
-                Log.w(TAG, "event connection failed; retrying")
+            } catch (error: Exception) {
+                Log.w(TAG, "event connection failed: ${error.javaClass.simpleName}: ${error.message}")
                 delay(backoff)
                 backoff = min(backoff * 2, 60_000L)
             }
