@@ -19,6 +19,7 @@ server/coverage.out
 *.db-shm
 *.db-wal
 firebase-service-account*.json
+android/app/google-services.json
 *.jks
 *.keystore
 
