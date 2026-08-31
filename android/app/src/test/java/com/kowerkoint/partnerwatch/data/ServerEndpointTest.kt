@@ -8,17 +8,17 @@ class ServerEndpointTest {
     @Test
     fun acceptsHttpsOrigin() {
         assertEquals(
-            "https://partner-watch.kowerkoint.com/",
-            ServerEndpoint.parse(" https://partner-watch.kowerkoint.com ").toString(),
+            "https://watch.example.com/",
+            ServerEndpoint.parse(" https://watch.example.com ").toString(),
         )
     }
 
     @Test
     fun rejectsHttpAndUrlWithSecretsOrExtraComponents() {
-        assertNull(ServerEndpoint.parse("http://partner-watch.kowerkoint.com"))
-        assertNull(ServerEndpoint.parse("https://user:pass@partner-watch.kowerkoint.com"))
-        assertNull(ServerEndpoint.parse("https://partner-watch.kowerkoint.com/path"))
-        assertNull(ServerEndpoint.parse("https://partner-watch.kowerkoint.com/?token=secret"))
-        assertNull(ServerEndpoint.parse("https://partner-watch.kowerkoint.com/#fragment"))
+        assertNull(ServerEndpoint.parse("http://watch.example.com"))
+        assertNull(ServerEndpoint.parse("https://user:pass@watch.example.com"))
+        assertNull(ServerEndpoint.parse("https://watch.example.com/path"))
+        assertNull(ServerEndpoint.parse("https://watch.example.com/?token=secret"))
+        assertNull(ServerEndpoint.parse("https://watch.example.com/#fragment"))
     }
 }

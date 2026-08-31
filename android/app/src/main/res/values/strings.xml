@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Partner Watch</string>
+    <string name="accessibility_service_label">Partner Watch 撮影サービス</string>
+    <string name="accessibility_service_description">本人が撮影受付を許可している間だけ、ペア相手からの要求に応じて画面を撮影します。</string>
 </resources>

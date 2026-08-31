@@ -4,7 +4,8 @@ info:
   version: 0.1.0
   description: API contract under development. Undocumented routes are not public API.
 servers:
-  - url: https://partner-watch.kowerkoint.com
+  - url: https://watch.example.com
+    description: Example only; the actual origin is supplied through PW_PUBLIC_URL.
 paths:
   /healthz:
     get:

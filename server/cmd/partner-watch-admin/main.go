@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -34,12 +35,13 @@ func main() {
 	flags := flag.NewFlagSet("pair-create", flag.ExitOnError)
 	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
 	name := flags.String("name", "Partner Watch", "pair display name")
-	serverURL := flags.String("server-url", "https://partner-watch.kowerkoint.com", "public HTTPS server URL")
+	serverURL := flags.String("server-url", os.Getenv("PW_PUBLIC_URL"), "public HTTPS server URL (or PW_PUBLIC_URL)")
 	ttl := flags.Duration("ttl", 15*time.Minute, "invitation validity")
 	_ = flags.Parse(os.Args[2:])
 
-	if !strings.HasPrefix(*serverURL, "https://") {
-		fatal("server URL must use HTTPS")
+	normalizedServerURL, err := normalizeServerURL(*serverURL)
+	if err != nil {
+		fatal(err.Error())
 	}
 	if *ttl <= 0 || *ttl > 24*time.Hour {
 		fatal("ttl must be greater than zero and at most 24h")
@@ -60,8 +62,8 @@ func main() {
 		PairName:  pair.PairName,
 		ExpiresAt: pair.ExpiresAt.Format(time.RFC3339),
 		Devices: [2]deviceInvite{
-			{Slot: 1, ServerURL: strings.TrimRight(*serverURL, "/"), InviteCode: pair.Invitations[0]},
-			{Slot: 2, ServerURL: strings.TrimRight(*serverURL, "/"), InviteCode: pair.Invitations[1]},
+			{Slot: 1, ServerURL: normalizedServerURL, InviteCode: pair.Invitations[0]},
+			{Slot: 2, ServerURL: normalizedServerURL, InviteCode: pair.Invitations[1]},
 		},
 	}
 	encoder := json.NewEncoder(os.Stdout)
@@ -69,6 +71,15 @@ func main() {
 	if err := encoder.Encode(result); err != nil {
 		fatal(err.Error())
 	}
+}
+
+func normalizeServerURL(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("server URL must be an HTTPS origin without path, credentials, query, or fragment")
+	}
+	return "https://" + parsed.Host, nil
 }
 
 func envOrDefault(name, fallback string) string {

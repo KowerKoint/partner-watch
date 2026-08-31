@@ -18,6 +18,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -26,7 +27,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.kowerkoint.partnerwatch.data.SavedEnrollment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +36,8 @@ fun EnrollmentScreen(
     onInvitationCodeChanged: (String) -> Unit,
     onDeviceNameChanged: (String) -> Unit,
     onEnroll: () -> Unit,
+    onCaptureAcceptingChanged: (Boolean) -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -51,7 +53,9 @@ fun EnrollmentScreen(
                 modifier = Modifier.padding(padding),
             )
             is EnrollmentUiState.Registered -> RegisteredContent(
-                enrollment = state.enrollment,
+                state = state,
+                onCaptureAcceptingChanged = onCaptureAcceptingChanged,
+                onOpenAccessibilitySettings = onOpenAccessibilitySettings,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -135,18 +139,57 @@ private fun EnrollmentFormContent(
 }
 
 @Composable
-private fun RegisteredContent(enrollment: SavedEnrollment, modifier: Modifier = Modifier) {
+private fun RegisteredContent(
+    state: EnrollmentUiState.Registered,
+    onCaptureAcceptingChanged: (Boolean) -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(
-        modifier = modifier.fillMaxSize().padding(24.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("登録完了", style = MaterialTheme.typography.headlineMedium)
+        Text("端末の設定", style = MaterialTheme.typography.headlineMedium)
         Text("この端末はPartner Watchに登録されています。")
         HorizontalDivider()
-        DetailRow("サーバー", enrollment.serverUrl)
-        DetailRow("端末ID", enrollment.deviceId)
-        DetailRow("ペアID", enrollment.pairId)
-        DetailRow("スロット", enrollment.slot.toString())
+        Text("画面撮影", style = MaterialTheme.typography.titleLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("撮影要求を受け付ける", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "本人が有効にしている間だけ撮影します",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = state.acceptingCaptures,
+                onCheckedChange = onCaptureAcceptingChanged,
+            )
+        }
+        Text(
+            if (state.accessibilityConnected) "撮影サービス: 有効" else "撮影サービス: 無効",
+            color = if (state.accessibilityConnected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
+        if (!state.accessibilityConnected) {
+            Text("Androidのユーザー補助設定で撮影サービスを許可してください。")
+            Button(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) {
+                Text("ユーザー補助設定を開く")
+            }
+        }
+        HorizontalDivider()
+        Text("登録情報", style = MaterialTheme.typography.titleLarge)
+        DetailRow("サーバー", state.enrollment.serverUrl)
+        DetailRow("端末ID", state.enrollment.deviceId)
+        DetailRow("ペアID", state.enrollment.pairId)
+        DetailRow("スロット", state.enrollment.slot.toString())
     }
 }
 
@@ -168,6 +211,8 @@ private fun EnrollmentFormPreview() {
             onInvitationCodeChanged = {},
             onDeviceNameChanged = {},
             onEnroll = {},
+            onCaptureAcceptingChanged = {},
+            onOpenAccessibilitySettings = {},
         )
     }
 }

@@ -9,10 +9,13 @@ import com.kowerkoint.partnerwatch.data.EnrollmentException
 import com.kowerkoint.partnerwatch.data.EnrollmentRepository
 import com.kowerkoint.partnerwatch.data.EnrollmentStore
 import com.kowerkoint.partnerwatch.data.SavedEnrollment
+import com.kowerkoint.partnerwatch.capture.CapturePreferences
+import com.kowerkoint.partnerwatch.capture.PartnerAccessibilityService
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.io.IOException
 
@@ -27,7 +30,11 @@ data class EnrollmentForm(
 sealed interface EnrollmentUiState {
     data object Loading : EnrollmentUiState
     data class Form(val value: EnrollmentForm) : EnrollmentUiState
-    data class Registered(val enrollment: SavedEnrollment) : EnrollmentUiState
+    data class Registered(
+        val enrollment: SavedEnrollment,
+        val acceptingCaptures: Boolean = false,
+        val accessibilityConnected: Boolean = false,
+    ) : EnrollmentUiState
 }
 
 class EnrollmentViewModel(application: Application) : AndroidViewModel(application) {
@@ -36,13 +43,18 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         store = EnrollmentStore(application.applicationContext),
         security = DeviceSecurity(),
     )
+    private val capturePreferences = CapturePreferences(application.applicationContext)
     private val mutableState = MutableStateFlow<EnrollmentUiState>(EnrollmentUiState.Loading)
     val state: StateFlow<EnrollmentUiState> = mutableState.asStateFlow()
 
     init {
         viewModelScope.launch {
-            mutableState.value = repository.load()?.let(EnrollmentUiState::Registered)
-                ?: EnrollmentUiState.Form(EnrollmentForm())
+            val enrollment = repository.load()
+            if (enrollment == null) {
+                mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
+            } else {
+                observeRegisteredState(enrollment)
+            }
         }
     }
 
@@ -59,7 +71,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             try {
                 val enrollment = repository.enroll(form.serverUrl, form.invitationCode, form.deviceName)
-                mutableState.value = EnrollmentUiState.Registered(enrollment)
+                observeRegisteredState(enrollment)
             } catch (error: IllegalArgumentException) {
                 showError(form, error.message ?: "入力内容を確認してください")
             } catch (error: EnrollmentException) {
@@ -70,6 +82,17 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
                 showError(form, "端末の登録に失敗しました")
             }
         }
+    }
+
+    fun setCaptureAccepting(value: Boolean) {
+        if (mutableState.value !is EnrollmentUiState.Registered) return
+        viewModelScope.launch { capturePreferences.setAccepting(value) }
+    }
+
+    private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
+        combine(capturePreferences.accepting, PartnerAccessibilityService.connected) { accepting, connected ->
+            EnrollmentUiState.Registered(enrollment, accepting, connected)
+        }.collect { mutableState.value = it }
     }
 
     private fun updateForm(transform: EnrollmentForm.() -> EnrollmentForm) {

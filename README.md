@@ -30,7 +30,7 @@ go run ./cmd/partner-watch-server
 go run ./cmd/partner-watch-admin pair-create \
   --data-dir ./data \
   --name "Partner Watch" \
-  --server-url https://partner-watch.kowerkoint.com
+  --server-url https://watch.example.com
 ```
 
 招待コードは既定で15分間有効で、それぞれ一度だけ使用できる。出力には秘密情報が含まれるためログへ保存しない。
@@ -55,6 +55,8 @@ nix run .#android-studio -- .
 ## 本番運用
 
 `deploy/compose.yaml`はアプリケーションサーバーだけを起動する。TLSはホストですでに稼働しているCaddyが終端し、コンテナのループバック公開ポートへ転送する。
+
+最初に`deploy/.env.example`を`deploy/.env`へコピーし、`PW_PUBLIC_URL`を実際のHTTPS公開URLへ変更する。実際の`.env`はGit管理対象外である。
 
 Docker Compose環境で招待コードを発行する場合は、サーバーと同じ永続ボリュームを使って管理CLIを実行する。
 
