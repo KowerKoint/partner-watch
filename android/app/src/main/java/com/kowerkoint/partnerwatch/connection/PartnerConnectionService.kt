@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -16,6 +17,7 @@ import com.kowerkoint.partnerwatch.capture.CaptureFailure
 import com.kowerkoint.partnerwatch.capture.CapturePreferences
 import com.kowerkoint.partnerwatch.capture.CaptureRejectedException
 import com.kowerkoint.partnerwatch.capture.CaptureUploader
+import com.kowerkoint.partnerwatch.capture.CapturedUpload
 import com.kowerkoint.partnerwatch.capture.JpegEncoder
 import com.kowerkoint.partnerwatch.capture.ScreenshotCaptureException
 import com.kowerkoint.partnerwatch.data.CaptureApi
@@ -85,6 +87,7 @@ class PartnerConnectionService : Service() {
             ImageRepository(ImageApi(client), sessions),
         )
         createNotificationChannel()
+        createCaptureNotificationChannel()
         notificationManager = getSystemService(NotificationManager::class.java)
         pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
@@ -156,7 +159,8 @@ class PartnerConnectionService : Service() {
     private suspend fun processCapture(session: DeviceSession, requestId: String) {
         try {
             val uploaded = uploader.captureAndUpload()
-            captureApi.reportReady(session, requestId, uploaded.imageId)
+            captureApi.reportReady(session, requestId, uploaded.uploaded.imageId)
+            showCaptureNotification(uploaded)
         } catch (_: CaptureRejectedException) {
             captureApi.reportFailure(session, requestId, "DISABLED")
         } catch (error: ScreenshotCaptureException) {
@@ -178,6 +182,31 @@ class PartnerConnectionService : Service() {
         )
     }
 
+    private fun createCaptureNotificationChannel() {
+        notificationManager.createNotificationChannel(
+            NotificationChannel(CAPTURE_CHANNEL_ID, "撮影結果", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+    }
+
+    private fun showCaptureNotification(capture: CapturedUpload) {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(capture.jpeg, 0, capture.jpeg.size, bounds)
+        val sample = generateSequence(1) { it * 2 }
+            .takeWhile { it <= 16 }
+            .lastOrNull { bounds.outWidth / it >= 512 || bounds.outHeight / it >= 512 } ?: 1
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bitmap = BitmapFactory.decodeByteArray(capture.jpeg, 0, capture.jpeg.size, options) ?: return
+        val notification = NotificationCompat.Builder(this, CAPTURE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("画面を撮影しました")
+            .setContentText("撮影側の画面を確認してください")
+            .setStyle(NotificationCompat.BigPictureStyle().bigPicture(bitmap))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        notificationManager.notify(CAPTURE_NOTIFICATION_ID, notification)
+    }
+
     private fun updateConnectionStatus(status: ConnectionStatus) {
         ConnectionStatusBus.set(status)
         if (::notificationManager.isInitialized && ::pendingIntent.isInitialized) {
@@ -195,5 +224,11 @@ class PartnerConnectionService : Service() {
         })
         .setOngoing(true).setContentIntent(pendingIntent).build()
 
-    private companion object { const val TAG = "PartnerWatchConnection"; const val CHANNEL_ID = "partner_connection"; const val NOTIFICATION_ID = 1001 }
+    private companion object {
+        const val TAG = "PartnerWatchConnection"
+        const val CHANNEL_ID = "partner_connection"
+        const val NOTIFICATION_ID = 1001
+        const val CAPTURE_CHANNEL_ID = "capture_result"
+        const val CAPTURE_NOTIFICATION_ID = 1002
+    }
 }

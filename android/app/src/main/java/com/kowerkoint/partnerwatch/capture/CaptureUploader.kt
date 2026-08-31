@@ -12,7 +12,7 @@ class CaptureUploader(
     private val encoder: JpegEncoder,
     private val images: ImageRepository,
 ) {
-    suspend fun captureAndUpload(): UploadedImage {
+    suspend fun captureAndUpload(): CapturedUpload {
         if (!preferences.accepting.first()) {
             throw CaptureRejectedException
         }
@@ -20,8 +20,11 @@ class CaptureUploader(
             throw ScreenshotCaptureException(CaptureFailure.LOCKED)
         }
         val bitmap = PartnerAccessibilityService.captureScreenshot()
-        return images.upload(encoder.encode(bitmap))
+        val jpeg = encoder.encode(bitmap)
+        return CapturedUpload(images.upload(jpeg), jpeg)
     }
 }
+
+data class CapturedUpload(val uploaded: UploadedImage, val jpeg: ByteArray)
 
 data object CaptureRejectedException : Exception("撮影受付が無効です")
