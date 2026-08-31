@@ -24,6 +24,17 @@ go run ./cmd/partner-watch-server
 
 既定では`127.0.0.1:8080`で待ち受ける。`PW_LISTEN_ADDR`で変更できる。
 
+端末登録用のペアと、2台分の一回限り招待コードを作るには次を実行する。
+
+```sh
+go run ./cmd/partner-watch-admin pair-create \
+  --data-dir ./data \
+  --name "Partner Watch" \
+  --server-url https://partner-watch.kowerkoint.com
+```
+
+招待コードは既定で15分間有効で、それぞれ一度だけ使用できる。出力には秘密情報が含まれるためログへ保存しない。
+
 ### Android
 
 Android Studioで`android/`をプロジェクトとして開く。コマンドラインでは次を実行する。
@@ -44,5 +55,13 @@ nix run .#android-studio -- .
 ## 本番運用
 
 `deploy/compose.yaml`はアプリケーションサーバーだけを起動する。TLSはホストですでに稼働しているCaddyが終端し、コンテナのループバック公開ポートへ転送する。
+
+Docker Compose環境で招待コードを発行する場合は、サーバーと同じ永続ボリュームを使って管理CLIを実行する。
+
+```sh
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server \
+  pair-create --name "Partner Watch"
+```
 
 秘密情報、SQLite DB、一時画像、Firebaseサービスアカウント、Android署名鍵はGitへ追加しない。

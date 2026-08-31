@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     environment:
       PW_LISTEN_ADDR: 0.0.0.0:8080
+      PW_DATA_DIR: /var/lib/partner-watch
     ports:
       - "127.0.0.1:18080:8080"
     volumes:

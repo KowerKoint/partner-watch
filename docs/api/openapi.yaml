@@ -29,6 +29,16 @@ paths:
       responses:
         "201":
           description: Device enrolled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollmentResponse"
+        "400":
+          description: Request JSON or field format is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Enrollment endpoint or invitation was not found.
 components:
@@ -56,4 +66,27 @@ components:
           maxLength: 80
         publicKey:
           type: string
-          description: Base64url-encoded device authentication public key.
+          description: Unpadded base64url-encoded 32-byte Ed25519 public key.
+    EnrollmentResponse:
+      type: object
+      additionalProperties: false
+      required: [deviceId, pairId, slot, credential]
+      properties:
+        deviceId:
+          type: string
+        pairId:
+          type: string
+        slot:
+          type: integer
+          minimum: 1
+          maximum: 2
+        credential:
+          type: string
+          description: Device credential returned once at enrollment.
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
