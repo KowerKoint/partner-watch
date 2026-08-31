@@ -86,6 +86,71 @@ func TestExpiredImagesAreDeleted(t *testing.T) {
 	}
 }
 
+func TestCaptureRequestRateLimitAndCompletion(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Now().UTC()
+	s.now = func() time.Time { return base }
+
+	request, err := s.CreateCaptureRequest(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatalf("CreateCaptureRequest: %v", err)
+	}
+	if request.TargetDeviceID != second.DeviceID || request.Status != "PENDING" {
+		t.Fatalf("request = %+v", request)
+	}
+	if _, err := s.CreateCaptureRequest(ctx, first.DeviceID); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("immediate request error = %v, want ErrRateLimited", err)
+	}
+
+	image, err := s.SaveImage(ctx, second.DeviceID, []byte("jpeg"), 1, 1)
+	if err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+	completed, err := s.CompleteCaptureRequest(ctx, second.DeviceID, request.ID, "READY", image.ID, "")
+	if err != nil {
+		t.Fatalf("CompleteCaptureRequest: %v", err)
+	}
+	if completed.Status != "READY" || completed.ImageID != image.ID {
+		t.Fatalf("completed = %+v", completed)
+	}
+	if _, err := s.CompleteCaptureRequest(ctx, second.DeviceID, request.ID, "READY", image.ID, ""); !errors.Is(err, ErrCaptureRequestNotFound) {
+		t.Fatalf("duplicate completion error = %v", err)
+	}
+
+	s.now = func() time.Time { return base.Add(11 * time.Second) }
+	if _, err := s.CreateCaptureRequest(ctx, first.DeviceID); err != nil {
+		t.Fatalf("request after 10 seconds: %v", err)
+	}
+}
+
+func TestCaptureRequestRejectsWrongTargetAndExpiredResult(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Now().UTC()
+	s.now = func() time.Time { return base }
+	request, err := s.CreateCaptureRequest(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatalf("CreateCaptureRequest: %v", err)
+	}
+	if _, err := s.CompleteCaptureRequest(ctx, first.DeviceID, request.ID, "FAILED", "", "DISABLED"); !errors.Is(err, ErrCaptureRequestNotFound) {
+		t.Fatalf("requester completion error = %v", err)
+	}
+	s.now = func() time.Time { return base.Add(time.Minute + time.Second) }
+	if _, err := s.CompleteCaptureRequest(ctx, second.DeviceID, request.ID, "FAILED", "", "DISABLED"); !errors.Is(err, ErrCaptureRequestNotFound) {
+		t.Fatalf("expired completion error = %v", err)
+	}
+	count, err := s.ExpireCaptureRequests(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("ExpireCaptureRequests = %d, %v; want 1, nil", count, err)
+	}
+	if count, err := s.ExpireCaptureRequests(ctx); err != nil || count != 0 {
+		t.Fatalf("second ExpireCaptureRequests = %d, %v; want 0, nil", count, err)
+	}
+}
+
 func enrollTestPair(t *testing.T, s *Store) (Enrollment, Enrollment) {
 	t.Helper()
 	ctx := context.Background()

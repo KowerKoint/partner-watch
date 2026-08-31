@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/kowerkoint/partner-watch/server/internal/store"
 )
 
@@ -25,6 +27,35 @@ type fakeImageBackend struct {
 	fakeEnroller
 	savedData []byte
 	taken     store.Image
+}
+
+type fakeCaptureBackend struct {
+	fakeEnroller
+	created   store.CaptureRequest
+	completed store.CaptureRequest
+}
+
+func (f *fakeCaptureBackend) AuthenticateDevice(_ context.Context, credential string) (string, error) {
+	if credential == "requester-token" {
+		return "requester", nil
+	}
+	if credential == "target-token" {
+		return "target", nil
+	}
+	return "", store.ErrUnauthorized
+}
+
+func (f *fakeCaptureBackend) CreateCaptureRequest(_ context.Context, requester string) (store.CaptureRequest, error) {
+	result := f.created
+	result.RequesterDeviceID = requester
+	return result, nil
+}
+
+func (f *fakeCaptureBackend) CompleteCaptureRequest(_ context.Context, target, requestID, status, imageID, failure string) (store.CaptureRequest, error) {
+	result := f.completed
+	result.ID, result.TargetDeviceID = requestID, target
+	result.Status, result.ImageID, result.Failure = status, imageID, failure
+	return result, nil
 }
 
 func (f *fakeImageBackend) AuthenticateDevice(_ context.Context, credential string) (string, error) {
@@ -191,4 +222,65 @@ func testJPEG(t *testing.T, width, height int) []byte {
 		t.Fatalf("encode JPEG: %v", err)
 	}
 	return buffer.Bytes()
+}
+
+func TestCaptureRequestIsDeliveredOverWebSocket(t *testing.T) {
+	hub := newEventHub()
+	backend := &fakeCaptureBackend{created: store.CaptureRequest{
+		ID: "request-id", TargetDeviceID: "target", Status: "PENDING",
+		CreatedAt: time.Unix(1, 0).UTC(), ExpiresAt: time.Unix(61, 0).UTC(),
+	}}
+	server := httptest.NewServer(newHandler(backend, hub))
+	defer server.Close()
+
+	header := http.Header{"Authorization": []string{"Bearer target-token"}}
+	connection, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(server.URL, "http")+"/v1/events", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() { _ = connection.Close(websocket.StatusNormalClosure, "") }()
+	deadline := time.Now().Add(time.Second)
+	for !hub.online("target") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/capture-requests", nil)
+	request.Header.Set("Authorization", "Bearer requester-token")
+	response := httptest.NewRecorder()
+	newHandler(backend, hub).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("capture status = %d; body = %s", response.Code, response.Body.String())
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	var event deviceEvent
+	if err := wsjson.Read(ctx, connection, &event); err != nil {
+		t.Fatalf("read event: %v", err)
+	}
+	if event.Type != "capture.requested" || event.RequestID != "request-id" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestCaptureResultIsDeliveredToRequester(t *testing.T) {
+	hub := newEventHub()
+	backend := &fakeCaptureBackend{completed: store.CaptureRequest{RequesterDeviceID: "requester"}}
+	channel, unsubscribe := hub.subscribe("requester")
+	defer unsubscribe()
+	body := strings.NewReader(`{"status":"FAILED","imageId":"","failure":"DISABLED"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/capture-requests/request-id/result", body)
+	request.Header.Set("Authorization", "Bearer target-token")
+	response := httptest.NewRecorder()
+	newHandler(backend, hub).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("result status = %d; body = %s", response.Code, response.Body.String())
+	}
+	select {
+	case event := <-channel:
+		if event.Type != "capture.completed" || event.Failure != "DISABLED" {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("capture result event was not delivered")
+	}
 }

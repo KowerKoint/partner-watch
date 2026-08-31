@@ -56,7 +56,7 @@ Foreground Serviceは実行中であることを示す常時通知を表示す�
 |---|---|---|---|
 | 言語 | Go | 確定 | 小さな単一バイナリにでき、自宅PCで運用しやすい |
 | API | JSON over HTTPS | 仮決定 | 端末との通信内容が単純で、調査もしやすい |
-| リアルタイム通信 | WebSocket | 仮決定 | 撮影要求と状態変化を低遅延に配信できる |
+| リアルタイム通信 | coder/websocket v1.8 | 確定 | 小さなAPIでContextに対応し、撮影要求と状態変化を低遅延に配信できる |
 | DB | SQLite（modernc.org/sqlite） | 確定 | 利用者2人では外部DBサーバーが不要で、CGOなしの静的コンテナを維持できる |
 | TLS・入口 | 既存のCaddy | 確定 | 所有済み固定ドメインで身内用サービスをすでに運用している |
 | 配布 | Docker Compose | 確定 | 既存Caddyとは独立したコンテナとして簡単に起動・更新できる |
@@ -92,6 +92,10 @@ Foreground Serviceは実行中であることを示す常時通知を表示す�
 要求には一意なIDと短い有効期限を設定し、再送による重複撮影を防止する。
 
 Androidの撮影処理は、受付設定の確認、`takeScreenshot()`、JPEG変換、`POST /v1/images`の順に実行する。OSがセキュアウィンドウとして拒否した場合は`CAPTURE_PROTECTED`、Accessibility権限が失われた場合は`SERVICE_UNAVAILABLE`へ分類する。要求配送との接続時には、この処理の前後で要求IDの重複排除と結果報告を追加する。
+
+要求元は`POST /v1/capture-requests`で要求を作成する。サーバーはSQLiteへ要求と1分後の失効時刻を記録し、対象端末の`GET /v1/events` WebSocketへ`capture.requested`を送る。対象端末は画像をアップロードした後、または撮影できなかった時点で`POST /v1/capture-requests/{requestId}/result`へ結果を返す。サーバーは対象端末IDと未完了・期限内であることを検証し、要求元へ`capture.completed`を送る。
+
+WebSocket接続は端末資格情報をBearer認証し、端末IDごとにメモリ上の接続ハブへ登録する。画像本体はWebSocketへ載せない。期限切れ要求は5秒間隔のサーバー処理で`TIMEOUT`へ確定し、監査履歴へ記録する。サーバー再起動や接続切断をまたぐ再取得用APIはAndroid常駐接続と合わせて追加する。
 
 ### 画像仕様
 

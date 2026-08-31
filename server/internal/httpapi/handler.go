@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/kowerkoint/partner-watch/server/internal/store"
 )
 
@@ -29,10 +31,18 @@ type Enroller interface {
 	EnrollDevice(ctx context.Context, invitationToken, deviceName, publicKey string) (store.Enrollment, error)
 }
 
-type ImageStore interface {
+type Authenticator interface {
 	AuthenticateDevice(ctx context.Context, credential string) (string, error)
+}
+
+type ImageStore interface {
 	SaveImage(ctx context.Context, deviceID string, data []byte, width, height int) (store.Image, error)
 	TakeImage(ctx context.Context, deviceID, imageID string) (store.Image, error)
+}
+
+type CaptureStore interface {
+	CreateCaptureRequest(ctx context.Context, requesterDeviceID string) (store.CaptureRequest, error)
+	CompleteCaptureRequest(ctx context.Context, targetDeviceID, requestID, status, imageID, failure string) (store.CaptureRequest, error)
 }
 
 type enrollmentRequest struct {
@@ -58,30 +68,53 @@ type imageResponse struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
+type captureRequestResponse struct {
+	RequestID string    `json:"requestId"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+type captureResultRequest struct {
+	Status  string `json:"status"`
+	ImageID string `json:"imageId"`
+	Failure string `json:"failure"`
+}
+
 const maxImageBytes = 10 * 1024 * 1024
 const maxImagePixels = 5_000_000
 
 func NewHandler(enroller Enroller) http.Handler {
+	return newHandler(enroller, newEventHub())
+}
+
+func newHandler(enroller Enroller, events *eventHub) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("POST /v1/enrollments", handleEnrollment(enroller))
-	if images, ok := enroller.(ImageStore); ok {
-		mux.HandleFunc("POST /v1/images", authenticate(images, handleImageUpload(images)))
-		mux.HandleFunc("GET /v1/images/{imageID}", authenticate(images, handleImageDownload(images)))
+	authenticator, authenticated := enroller.(Authenticator)
+	if images, ok := enroller.(ImageStore); ok && authenticated {
+		mux.HandleFunc("POST /v1/images", authenticate(authenticator, handleImageUpload(images)))
+		mux.HandleFunc("GET /v1/images/{imageID}", authenticate(authenticator, handleImageDownload(images)))
+	}
+	if captures, ok := enroller.(CaptureStore); ok && authenticated {
+		mux.HandleFunc("GET /v1/events", handleEvents(authenticator, events))
+		mux.HandleFunc("POST /v1/capture-requests", authenticate(authenticator, handleCaptureRequest(captures, events)))
+		mux.HandleFunc("POST /v1/capture-requests/{requestID}/result", authenticate(authenticator, handleCaptureResult(captures, events)))
 	}
 	return securityHeaders(mux)
 }
 
 type authenticatedHandler func(http.ResponseWriter, *http.Request, string)
 
-func authenticate(images ImageStore, next authenticatedHandler) http.HandlerFunc {
+func authenticate(authenticator Authenticator, next authenticatedHandler) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		authorization := request.Header.Get("Authorization")
 		if !strings.HasPrefix(authorization, "Bearer ") || strings.Contains(strings.TrimPrefix(authorization, "Bearer "), " ") {
 			writeError(response, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		deviceID, err := images.AuthenticateDevice(request.Context(), strings.TrimPrefix(authorization, "Bearer "))
+		deviceID, err := authenticator.AuthenticateDevice(request.Context(), strings.TrimPrefix(authorization, "Bearer "))
 		if errors.Is(err, store.ErrUnauthorized) {
 			writeError(response, http.StatusUnauthorized, "unauthorized")
 			return
@@ -92,6 +125,117 @@ func authenticate(images ImageStore, next authenticatedHandler) http.HandlerFunc
 		}
 		next(response, request, deviceID)
 	}
+}
+
+func handleEvents(authenticator Authenticator, events *eventHub) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		authorization := request.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, "Bearer ") {
+			writeError(response, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		deviceID, err := authenticator.AuthenticateDevice(request.Context(), strings.TrimPrefix(authorization, "Bearer "))
+		if err != nil {
+			writeError(response, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close(websocket.StatusNormalClosure, "") }()
+		connection.SetReadLimit(16 * 1024)
+		ctx := connection.CloseRead(request.Context())
+		channel, unsubscribe := events.subscribe(deviceID)
+		defer unsubscribe()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-channel:
+				writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				err := wsjson.Write(writeCtx, connection, event)
+				cancel()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+func handleCaptureRequest(captures CaptureStore, events *eventHub) authenticatedHandler {
+	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
+		capture, err := captures.CreateCaptureRequest(request.Context(), deviceID)
+		if errors.Is(err, store.ErrPartnerNotFound) {
+			writeError(response, http.StatusConflict, "partner_unavailable")
+			return
+		}
+		if errors.Is(err, store.ErrRateLimited) {
+			writeError(response, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		events.publish(capture.TargetDeviceID, deviceEvent{
+			Type: "capture.requested", RequestID: capture.ID, ExpiresAt: capture.ExpiresAt.Format(time.RFC3339),
+		})
+		writeJSON(response, http.StatusCreated, captureRequestResponse{
+			RequestID: capture.ID, Status: capture.Status, CreatedAt: capture.CreatedAt, ExpiresAt: capture.ExpiresAt,
+		})
+	}
+}
+
+func handleCaptureResult(captures CaptureStore, events *eventHub) authenticatedHandler {
+	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
+		request.Body = http.MaxBytesReader(response, request.Body, 16*1024)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body captureResultRequest
+		if err := decoder.Decode(&body); err != nil {
+			writeError(response, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) || !validCaptureResult(body) || request.PathValue("requestID") == "" {
+			writeError(response, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		capture, err := captures.CompleteCaptureRequest(
+			request.Context(), deviceID, request.PathValue("requestID"), body.Status, body.ImageID, body.Failure,
+		)
+		if errors.Is(err, store.ErrCaptureRequestNotFound) {
+			http.NotFound(response, request)
+			return
+		}
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		events.publish(capture.RequesterDeviceID, deviceEvent{
+			Type: "capture.completed", RequestID: capture.ID, Status: capture.Status,
+			ImageID: capture.ImageID, Failure: capture.Failure,
+		})
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func validCaptureResult(body captureResultRequest) bool {
+	if body.Status == "READY" {
+		return body.ImageID != "" && body.Failure == "" && !strings.ContainsAny(body.ImageID, "/\\")
+	}
+	if body.Status != "FAILED" || body.ImageID != "" {
+		return false
+	}
+	for _, allowed := range []string{"DISABLED", "SERVICE_UNAVAILABLE", "LOCKED", "CAPTURE_PROTECTED", "INTERNAL_ERROR"} {
+		if body.Failure == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func handleImageUpload(images ImageStore) authenticatedHandler {

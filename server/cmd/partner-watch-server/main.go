@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = database.Close() }()
-	go cleanupExpiredImages(database, logger)
+	go maintainData(database, logger)
 
 	server := &http.Server{
 		Addr:              address,
@@ -39,8 +39,8 @@ func main() {
 	}
 }
 
-func cleanupExpiredImages(database *store.Store, logger *slog.Logger) {
-	cleanup := func() {
+func maintainData(database *store.Store, logger *slog.Logger) {
+	cleanupImages := func() {
 		count, err := database.DeleteExpiredImages(context.Background())
 		if err != nil {
 			logger.Error("failed to delete expired images", "error", err)
@@ -48,11 +48,27 @@ func cleanupExpiredImages(database *store.Store, logger *slog.Logger) {
 			logger.Info("deleted expired images", "count", count)
 		}
 	}
-	cleanup()
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		cleanup()
+	expireCaptures := func() {
+		count, err := database.ExpireCaptureRequests(context.Background())
+		if err != nil {
+			logger.Error("failed to expire capture requests", "error", err)
+		} else if count > 0 {
+			logger.Info("expired capture requests", "count", count)
+		}
+	}
+	cleanupImages()
+	expireCaptures()
+	imageTicker := time.NewTicker(10 * time.Minute)
+	captureTicker := time.NewTicker(5 * time.Second)
+	defer imageTicker.Stop()
+	defer captureTicker.Stop()
+	for {
+		select {
+		case <-imageTicker.C:
+			cleanupImages()
+		case <-captureTicker.C:
+			expireCaptures()
+		}
 	}
 }
 

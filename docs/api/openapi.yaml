@@ -95,6 +95,63 @@ paths:
           description: Device credential is invalid.
         "404":
           description: Image does not exist, expired, was already retrieved, or belongs to another pair/device.
+  /v1/events:
+    get:
+      operationId: connectEvents
+      description: Upgrades to a WebSocket that delivers events for the authenticated device.
+      security:
+        - bearerAuth: []
+      responses:
+        "101":
+          description: WebSocket connection established.
+        "401":
+          description: Device credential is invalid.
+  /v1/capture-requests:
+    post:
+      operationId: createCaptureRequest
+      description: Creates a request for the other device in the pair. Requests expire after one minute.
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Capture request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptureRequest"
+        "401":
+          description: Device credential is invalid.
+        "409":
+          description: The paired device is not enrolled.
+        "429":
+          description: Limit of one request per 10 seconds or 60 per hour was exceeded.
+  /v1/capture-requests/{requestId}/result:
+    post:
+      operationId: reportCaptureResult
+      description: Reports a successful upload or a classified failure from the requested device.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaptureResult"
+      responses:
+        "204":
+          description: Result accepted and delivered to the requester when connected.
+        "400":
+          description: Result fields are invalid.
+        "401":
+          description: Device credential is invalid.
+        "404":
+          description: Request does not exist, expired, completed, or belongs to another device.
 components:
   securitySchemes:
     bearerAuth:
@@ -154,6 +211,67 @@ components:
         expiresAt:
           type: string
           format: date-time
+    CaptureRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, status, createdAt, expiresAt]
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          const: PENDING
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    CaptureResult:
+      type: object
+      additionalProperties: false
+      required: [status, imageId, failure]
+      properties:
+        status:
+          type: string
+          enum: [READY, FAILED]
+        imageId:
+          type: string
+          description: Required for READY and empty for FAILED.
+        failure:
+          type: string
+          enum: ["", DISABLED, SERVICE_UNAVAILABLE, LOCKED, CAPTURE_PROTECTED, INTERNAL_ERROR]
+          description: Empty for READY and classified for FAILED.
+    DeviceEvent:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, requestId, expiresAt]
+          properties:
+            type:
+              type: string
+              const: capture.requested
+            requestId:
+              type: string
+            expiresAt:
+              type: string
+              format: date-time
+        - type: object
+          additionalProperties: false
+          required: [type, requestId, status]
+          properties:
+            type:
+              type: string
+              const: capture.completed
+            requestId:
+              type: string
+            status:
+              type: string
+              enum: [READY, FAILED, TIMEOUT]
+            imageId:
+              type: string
+            failure:
+              type: string
     Error:
       type: object
       additionalProperties: false
