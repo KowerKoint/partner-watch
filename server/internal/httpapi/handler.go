@@ -13,6 +13,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -143,13 +144,16 @@ func handleEvents(authenticator Authenticator, events *eventHub) http.HandlerFun
 			CompressionMode: websocket.CompressionDisabled,
 		})
 		if err != nil {
+			slog.Warn("websocket upgrade failed")
 			return
 		}
+		slog.Info("websocket connected", "device_id", deviceID)
 		defer func() { _ = connection.Close(websocket.StatusNormalClosure, "") }()
 		connection.SetReadLimit(16 * 1024)
 		ctx := connection.CloseRead(request.Context())
 		channel, unsubscribe := events.subscribe(deviceID)
 		defer unsubscribe()
+		defer slog.Info("websocket disconnected", "device_id", deviceID)
 		for {
 			select {
 			case <-ctx.Done():

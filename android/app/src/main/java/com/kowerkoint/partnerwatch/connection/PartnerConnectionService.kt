@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.kowerkoint.partnerwatch.MainActivity
@@ -108,6 +109,7 @@ class PartnerConnectionService : Service() {
                 delay(1_000L)
                 backoff = 1_000L
             } catch (_: Exception) {
+                Log.w(TAG, "event connection failed; retrying")
                 delay(backoff)
                 backoff = min(backoff * 2, 60_000L)
             }
@@ -124,6 +126,7 @@ class PartnerConnectionService : Service() {
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { closed.complete(Unit) }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.w(TAG, "event connection failed: ${t.javaClass.simpleName}")
                 closed.completeExceptionally(t)
             }
         })
@@ -166,5 +169,5 @@ class PartnerConnectionService : Service() {
         )
     }
 
-    private companion object { const val CHANNEL_ID = "partner_connection"; const val NOTIFICATION_ID = 1001 }
+    private companion object { const val TAG = "PartnerWatchConnection"; const val CHANNEL_ID = "partner_connection"; const val NOTIFICATION_ID = 1001 }
 }
