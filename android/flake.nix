@@ -16,8 +16,10 @@
       androidComposition = pkgs.androidenv.composeAndroidPackages {
         platformVersions = [ "36" "37" ];
         buildToolsVersions = [ "36.0.0" ];
-        includeEmulator = false;
-        includeSystemImages = false;
+        includeEmulator = true;
+        includeSystemImages = true;
+        systemImageTypes = [ "google_apis_playstore" ];
+        abiVersions = [ "x86_64" ];
       };
       androidSdkRoot = "${androidComposition.androidsdk}/libexec/android-sdk";
       androidStudioLauncher = pkgs.writeShellScript "partner-watch-android-studio" ''

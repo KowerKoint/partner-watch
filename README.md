@@ -52,6 +52,19 @@ Android StudioはCLI用開発シェルと分離している。`android/`で次�
 nix run .#android-studio -- .
 ```
 
+Android SDK、Emulator、API 36のGoogle Play対応x86_64システムイメージはNixで管理され、Nixストア内では読み取り専用になる。StudioのSDK Managerからパッケージを追加・更新せず、flakeを変更して`nix run .#android-studio -- .`で起動し直す。AVD定義と仮想端末データは通常どおり利用者の`~/.android`へ保存される。API 37はコンパイル用プラットフォームとして含め、エミュレータ試験はアプリの最小対象であるAPI 36で行う。
+
+API 36の試験用AVDは次のように作成できる。新しいシステムイメージに`devices.xml`がないという警告が表示されても、`avdmanager list avd`にAVDが表示されれば作成は完了している。
+
+```sh
+cd android
+nix develop -c avdmanager create avd \
+  --name PartnerWatch_API_36 \
+  --package 'system-images;android-36;google_apis_playstore;x86_64' \
+  --device pixel_6
+nix develop -c avdmanager list avd
+```
+
 ## 本番運用
 
 `deploy/compose.yaml`はアプリケーションサーバーだけを起動する。TLSはホストですでに稼働しているCaddyが終端し、コンテナのループバック公開ポートへ転送する。

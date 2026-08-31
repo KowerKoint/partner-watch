@@ -243,3 +243,12 @@
 - 決定: 撮影成功時はJPEGを一度だけ取得してアプリ画面へ表示し、自動では写真コレクションへ保存しない。
 - 決定: 利用者が保存ボタンを押した場合だけMediaStoreの`Pictures/Partner Watch`へ追加する。
 - 決定: 要求作成のHTTP応答よりWebSocket結果が先着する競合を、要求ID単位の小さな早着結果バッファで吸収する。
+
+## D-032: Android EmulatorとシステムイメージもNixで管理する
+
+- 日付: 2026-08-31
+- 状態: 確定
+- 決定: Android EmulatorとAPI 36のGoogle Play対応x86_64システムイメージを`android/flake.nix`へ含める。API 37はコンパイル用プラットフォームとして維持する。
+- 決定: Nixストア内のSDKは読み取り専用なので、Android StudioのSDK Managerからパッケージを追加・更新しない。
+- 決定: AVD定義と仮想端末データはGit管理せず、利用者のAndroid設定ディレクトリへ保存する。
+- 理由: CLIビルド、Studio、エミュレータが同じ再現可能なSDK構成を使い、SDK ManagerによるNixストアへの書き込み失敗を避けるため。
