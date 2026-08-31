@@ -42,6 +42,8 @@ Android B ── HTTPS / WebSocket ──┘                         └── �
 | ローカル設定 | DataStore | 仮決定 | 小規模な設定値と状態の保存に適する |
 | 秘密情報 | Android Keystore | 確定 | 認証鍵や暗号鍵を通常ファイルとして保存しない |
 
+端末認証鍵はAndroid Keystore内で生成するP-256 ECDSA鍵とし、秘密鍵をエクスポートしない。サーバーへはX.509 SubjectPublicKeyInfo形式の公開鍵だけを登録する。サーバー発行の端末資格情報は、Android Keystore内のAES-256-GCM鍵で暗号化してDataStoreへ保存する。
+
 Accessibility Serviceは、初回セットアップ時に各利用者が明示的に有効化する。APKを直接インストールするため、端末設定の「制限付き設定を許可」も必要になる。
 
 Foreground Serviceは実行中であることを示す常時通知を表示する。OSに隠れて監視する動作は設計しない。

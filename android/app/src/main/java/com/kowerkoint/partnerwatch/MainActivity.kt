@@ -1,47 +1,37 @@
 package com.kowerkoint.partnerwatch
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kowerkoint.partnerwatch.ui.EnrollmentScreen
+import com.kowerkoint.partnerwatch.ui.EnrollmentViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+        )
         setContent {
             PartnerWatchTheme {
-                PartnerWatchApp()
+                val viewModel: EnrollmentViewModel = viewModel()
+                val state = viewModel.state.collectAsStateWithLifecycle()
+                EnrollmentScreen(
+                    state = state.value,
+                    onServerUrlChanged = viewModel::updateServerUrl,
+                    onInvitationCodeChanged = viewModel::updateInvitationCode,
+                    onDeviceNameChanged = viewModel::updateDeviceName,
+                    onEnroll = viewModel::enroll,
+                )
             }
-        }
-    }
-}
-
-@Composable
-private fun PartnerWatchApp() {
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier.padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "Partner Watch",
-                style = MaterialTheme.typography.headlineMedium,
-            )
-            Text(
-                text = "初期セットアップが必要です",
-                style = MaterialTheme.typography.bodyLarge,
-            )
         }
     }
 }

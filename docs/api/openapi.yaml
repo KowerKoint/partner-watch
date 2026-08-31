@@ -66,7 +66,7 @@ components:
           maxLength: 80
         publicKey:
           type: string
-          description: Unpadded base64url-encoded 32-byte Ed25519 public key.
+          description: Unpadded base64url-encoded X.509 SubjectPublicKeyInfo for a P-256 ECDSA key.
     EnrollmentResponse:
       type: object
       additionalProperties: false

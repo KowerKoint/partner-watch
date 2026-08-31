@@ -2,6 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -50,7 +54,7 @@ func TestUnknownRouteDoesNotExposeDetails(t *testing.T) {
 }
 
 func TestEnrollDevice(t *testing.T) {
-	publicKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	publicKey := testPublicKey(t)
 	body := `{"invitationToken":"1234567890123456789012345678901234567890123","deviceName":"Pixel 8a","publicKey":"` + publicKey + `"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/enrollments", strings.NewReader(body))
 	response := httptest.NewRecorder()
@@ -69,7 +73,7 @@ func TestEnrollDevice(t *testing.T) {
 }
 
 func TestInvalidInvitationReturnsNotFound(t *testing.T) {
-	publicKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	publicKey := testPublicKey(t)
 	body := `{"invitationToken":"1234567890123456789012345678901234567890123","deviceName":"Pixel","publicKey":"` + publicKey + `"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/enrollments", strings.NewReader(body))
 	response := httptest.NewRecorder()
@@ -79,6 +83,19 @@ func TestInvalidInvitationReturnsNotFound(t *testing.T) {
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
+}
+
+func testPublicKey(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	encoded, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded)
 }
 
 func TestMalformedEnrollmentReturnsBadRequest(t *testing.T) {

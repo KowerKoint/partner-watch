@@ -13,7 +13,8 @@ server/coverage.out
 .env
 .env.*
 !.env.example
-data/
+/data/
+/server/data/
 *.db
 *.db-shm
 *.db-wal

@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -107,8 +110,13 @@ func validEnrollment(request enrollmentRequest) bool {
 	if !utf8.ValidString(request.DeviceName) || utf8.RuneCountInString(request.DeviceName) < 1 || utf8.RuneCountInString(request.DeviceName) > 80 {
 		return false
 	}
-	publicKey, err := base64.RawURLEncoding.DecodeString(request.PublicKey)
-	return err == nil && len(publicKey) == 32
+	publicKeyBytes, err := base64.RawURLEncoding.DecodeString(request.PublicKey)
+	if err != nil {
+		return false
+	}
+	parsed, err := x509.ParsePKIXPublicKey(publicKeyBytes)
+	publicKey, ok := parsed.(*ecdsa.PublicKey)
+	return err == nil && ok && publicKey.Curve == elliptic.P256()
 }
 
 func writeError(response http.ResponseWriter, status int, code string) {

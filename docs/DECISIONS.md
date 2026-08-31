@@ -183,3 +183,11 @@
 - 状態: 確定
 - 決定: SQLiteドライバーとして`modernc.org/sqlite`を使用する。
 - 理由: CGOなしでビルドでき、distrolessの静的・非rootコンテナ構成を維持できるため。
+
+## D-025: 端末認証にAndroid KeystoreのP-256鍵を使う
+
+- 日付: 2026-08-31
+- 状態: 確定
+- 決定: 各端末でP-256 ECDSA鍵をAndroid Keystore内に生成し、X.509形式の公開鍵だけをサーバーへ登録する。
+- 決定: サーバー発行の端末資格情報は、Android Keystore内のAES-256-GCM鍵で暗号化してDataStoreへ保存する。
+- 理由: Android 16で公式にサポートされるKeystore実装を使い、秘密鍵と保存データ暗号鍵をアプリの通常ファイル領域へ出さないため。
