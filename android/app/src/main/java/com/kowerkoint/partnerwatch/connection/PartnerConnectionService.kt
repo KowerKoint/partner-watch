@@ -70,6 +70,8 @@ class PartnerConnectionService : Service() {
     private val captureMutex = Mutex()
     private lateinit var sessions: DeviceSessionRepository
     private lateinit var uploader: CaptureUploader
+    private lateinit var notificationManager: NotificationManager
+    private lateinit var pendingIntent: PendingIntent
     private val captureApi = CaptureApi(client)
     private var connectionJob: Job? = null
 
@@ -83,14 +85,12 @@ class PartnerConnectionService : Service() {
             ImageRepository(ImageApi(client), sessions),
         )
         createNotificationChannel()
-        val pendingIntent = PendingIntent.getActivity(
+        notificationManager = getSystemService(NotificationManager::class.java)
+        pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Partner Watch")
-            .setContentText("撮影要求を待機しています")
-            .setOngoing(true).setContentIntent(pendingIntent).build()
+        ConnectionStatusBus.set(ConnectionStatus.STARTING)
+        val notification = buildNotification(ConnectionStatus.STARTING)
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
@@ -109,6 +109,7 @@ class PartnerConnectionService : Service() {
                 delay(1_000L)
                 backoff = 1_000L
             } catch (error: Exception) {
+                updateConnectionStatus(ConnectionStatus.RECONNECTING)
                 Log.w(TAG, "event connection failed: ${error.javaClass.simpleName}: ${error.message}")
                 delay(backoff)
                 backoff = min(backoff * 2, 60_000L)
@@ -124,9 +125,16 @@ class PartnerConnectionService : Service() {
         val request = Request.Builder().url(wsUrl)
             .header("Authorization", "Bearer ${session.credential}").build()
         val socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                updateConnectionStatus(ConnectionStatus.CONNECTED)
+            }
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { closed.complete(Unit) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                updateConnectionStatus(ConnectionStatus.RECONNECTING)
+                closed.complete(Unit)
+            }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                updateConnectionStatus(ConnectionStatus.RECONNECTING)
                 Log.w(TAG, "event connection failed: ${t.javaClass.simpleName}")
                 closed.completeExceptionally(t)
             }
@@ -169,6 +177,23 @@ class PartnerConnectionService : Service() {
             NotificationChannel(CHANNEL_ID, "Partner Watch接続", NotificationManager.IMPORTANCE_LOW),
         )
     }
+
+    private fun updateConnectionStatus(status: ConnectionStatus) {
+        ConnectionStatusBus.set(status)
+        if (::notificationManager.isInitialized && ::pendingIntent.isInitialized) {
+            notificationManager.notify(NOTIFICATION_ID, buildNotification(status))
+        }
+    }
+
+    private fun buildNotification(status: ConnectionStatus) = NotificationCompat.Builder(this, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_launcher_foreground)
+        .setContentTitle("Partner Watch")
+        .setContentText(when (status) {
+            ConnectionStatus.STARTING -> "サーバーへ接続しています"
+            ConnectionStatus.CONNECTED -> "サーバー接続済み・撮影要求を待機しています"
+            ConnectionStatus.RECONNECTING -> "サーバー再接続中"
+        })
+        .setOngoing(true).setContentIntent(pendingIntent).build()
 
     private companion object { const val TAG = "PartnerWatchConnection"; const val CHANNEL_ID = "partner_connection"; const val NOTIFICATION_ID = 1001 }
 }

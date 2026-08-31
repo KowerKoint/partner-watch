@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -162,6 +163,18 @@ private fun RegisteredContent(
     ) {
         Text("端末の設定", style = MaterialTheme.typography.headlineMedium)
         Text("この端末はPartner Watchに登録されています。")
+        Text(
+            when (state.connectionStatus) {
+                ConnectionStatus.STARTING -> "サーバー接続: 接続開始中"
+                ConnectionStatus.CONNECTED -> "サーバー接続: 接続済み"
+                ConnectionStatus.RECONNECTING -> "サーバー接続: 再接続中"
+            },
+            color = if (state.connectionStatus == ConnectionStatus.CONNECTED) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
         HorizontalDivider()
         Text("相手の画面", style = MaterialTheme.typography.titleLarge)
         Button(

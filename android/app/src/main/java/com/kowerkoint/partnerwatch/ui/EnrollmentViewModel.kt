@@ -13,6 +13,8 @@ import com.kowerkoint.partnerwatch.capture.CapturePreferences
 import com.kowerkoint.partnerwatch.capture.PartnerAccessibilityService
 import com.kowerkoint.partnerwatch.connection.CaptureEventBus
 import com.kowerkoint.partnerwatch.connection.CaptureCompletedEvent
+import com.kowerkoint.partnerwatch.connection.ConnectionStatus
+import com.kowerkoint.partnerwatch.connection.ConnectionStatusBus
 import com.kowerkoint.partnerwatch.data.CaptureApi
 import com.kowerkoint.partnerwatch.data.CaptureRequestException
 import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
@@ -44,6 +46,7 @@ sealed interface EnrollmentUiState {
         val enrollment: SavedEnrollment,
         val acceptingCaptures: Boolean = false,
         val accessibilityConnected: Boolean = false,
+        val connectionStatus: ConnectionStatus = ConnectionStatus.STARTING,
         val capture: CaptureUiState = CaptureUiState.Idle,
     ) : EnrollmentUiState
 }
@@ -165,8 +168,8 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
-        combine(capturePreferences.accepting, PartnerAccessibilityService.connected, captureState) { accepting, connected, capture ->
-            EnrollmentUiState.Registered(enrollment, accepting, connected, capture)
+        combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, captureState) { accepting, connected, connection, capture ->
+            EnrollmentUiState.Registered(enrollment, accepting, connected, connection, capture)
         }.collect { mutableState.value = it }
     }
 
