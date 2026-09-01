@@ -26,6 +26,7 @@ import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
 import com.kowerkoint.partnerwatch.data.EnrollmentStore
 import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
+import com.kowerkoint.partnerwatch.data.PendingCaptureApi
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -75,6 +76,7 @@ class PartnerConnectionService : Service() {
     private lateinit var notificationManager: NotificationManager
     private lateinit var pendingIntent: PendingIntent
     private val captureApi = CaptureApi(client)
+    private val pendingCaptureApi = PendingCaptureApi(client)
     private var connectionJob: Job? = null
 
     override fun onCreate() {
@@ -130,6 +132,7 @@ class PartnerConnectionService : Service() {
         val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 updateConnectionStatus(ConnectionStatus.CONNECTED)
+                scope.launch { processPendingCaptures(session) }
             }
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -152,6 +155,14 @@ class PartnerConnectionService : Service() {
         scope.launch {
             captureMutex.withLock {
                 if (event.expiresAt.isAfter(Instant.now())) processCapture(session, event.requestId)
+            }
+        }
+    }
+
+    private suspend fun processPendingCaptures(session: DeviceSession) {
+        runCatching { pendingCaptureApi.list(session) }.getOrDefault(emptyList()).forEach { event ->
+            if (event.expiresAt.isAfter(Instant.now())) {
+                captureMutex.withLock { if (event.expiresAt.isAfter(Instant.now())) processCapture(session, event.requestId) }
             }
         }
     }

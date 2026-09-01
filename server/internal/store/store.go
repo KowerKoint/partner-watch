@@ -620,6 +620,27 @@ func (s *Store) ListPairs(ctx context.Context) ([]PairSummary, error) {
 	return result, nil
 }
 
+func (s *Store) PendingCaptureRequests(ctx context.Context, deviceID string) ([]CaptureRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, pair_id, requester_device_id, target_device_id, created_at, expires_at FROM capture_requests WHERE target_device_id = ? AND status = 'PENDING' AND expires_at > ? ORDER BY created_at`, deviceID, s.now().UTC().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("list pending captures: %w", err)
+	}
+	defer rows.Close()
+	var result []CaptureRequest
+	for rows.Next() {
+		var item CaptureRequest
+		var created, expires int64
+		if err := rows.Scan(&item.ID, &item.PairID, &item.RequesterDeviceID, &item.TargetDeviceID, &created, &expires); err != nil {
+			return nil, err
+		}
+		item.Status = "PENDING"
+		item.CreatedAt = time.Unix(created, 0).UTC()
+		item.ExpiresAt = time.Unix(expires, 0).UTC()
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) EnrollDevice(
 	ctx context.Context,
 	invitationToken string,

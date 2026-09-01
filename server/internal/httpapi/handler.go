@@ -52,6 +52,9 @@ type CaptureStore interface {
 	CreateCaptureRequest(ctx context.Context, requesterDeviceID string) (store.CaptureRequest, error)
 	CompleteCaptureRequest(ctx context.Context, targetDeviceID, requestID, status, imageID, failure string) (store.CaptureRequest, error)
 }
+type PendingCaptureStore interface {
+	PendingCaptureRequests(ctx context.Context, deviceID string) ([]store.CaptureRequest, error)
+}
 
 type enrollmentRequest struct {
 	InvitationToken string `json:"invitationToken"`
@@ -81,6 +84,9 @@ type captureRequestResponse struct {
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
+}
+type pendingCaptureResponse struct {
+	Requests []captureRequestResponse `json:"requests"`
 }
 
 type fcmTokenRequest struct {
@@ -113,10 +119,28 @@ func newHandler(enroller Enroller, events *eventHub, sender ...WakeupSender) htt
 		mux.HandleFunc("POST /v1/capture-requests", authenticate(authenticator, handleCaptureRequest(captures, events, sender...)))
 		mux.HandleFunc("POST /v1/capture-requests/{requestID}/result", authenticate(authenticator, handleCaptureResult(captures, events)))
 	}
+	if pending, ok := enroller.(PendingCaptureStore); ok && authenticated {
+		mux.HandleFunc("GET /v1/capture-requests/pending", authenticate(authenticator, handlePendingCaptureRequests(pending)))
+	}
 	if tokens, ok := enroller.(FCMTokenStore); ok && authenticated {
 		mux.HandleFunc("POST /v1/device/fcm-token", authenticate(authenticator, handleFCMToken(tokens)))
 	}
 	return securityHeaders(mux)
+}
+
+func handlePendingCaptureRequests(captures PendingCaptureStore) authenticatedHandler {
+	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
+		requests, err := captures.PendingCaptureRequests(request.Context(), deviceID)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		result := pendingCaptureResponse{Requests: make([]captureRequestResponse, 0, len(requests))}
+		for _, item := range requests {
+			result.Requests = append(result.Requests, captureRequestResponse{RequestID: item.ID, Status: item.Status, CreatedAt: item.CreatedAt, ExpiresAt: item.ExpiresAt})
+		}
+		writeJSON(response, http.StatusOK, result)
+	}
 }
 
 type authenticatedHandler func(http.ResponseWriter, *http.Request, string)
