@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
+import com.kowerkoint.partnerwatch.BuildConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +49,7 @@ fun EnrollmentScreen(
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
+    onDisconnectForTest: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -69,6 +71,7 @@ fun EnrollmentScreen(
                 onRequestCapture = onRequestCapture,
                 onSavePhoto = onSavePhoto,
                 onLogout = onLogout,
+                onDisconnectForTest = onDisconnectForTest,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -159,6 +162,7 @@ private fun RegisteredContent(
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
+    onDisconnectForTest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -254,6 +258,11 @@ private fun RegisteredContent(
         OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
             Text("この端末の登録を解除")
         }
+        if (BuildConfig.DEBUG) {
+            OutlinedButton(onClick = onDisconnectForTest, modifier = Modifier.fillMaxWidth()) {
+                Text("[テスト] WebSocket接続を切断")
+            }
+        }
     }
 }
 
@@ -280,6 +289,7 @@ private fun EnrollmentFormPreview() {
             onRequestCapture = {},
             onSavePhoto = {},
             onLogout = {},
+            onDisconnectForTest = {},
         )
     }
 }
