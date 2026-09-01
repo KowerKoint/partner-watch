@@ -194,12 +194,16 @@ private fun RegisteredContent(
         Text("端末の設定", style = MaterialTheme.typography.headlineMedium)
         Text("この端末はPartner Watchに登録されています。")
         Text(
-            when (state.connectionStatus) {
+            if (state.connectionMode == ConnectionMode.FCM_ONLY) {
+                "サーバー接続: 省電力で待機中"
+            } else when (state.connectionStatus) {
                 ConnectionStatus.STARTING -> "サーバー接続: 接続開始中"
                 ConnectionStatus.CONNECTED -> "サーバー接続: 接続済み"
                 ConnectionStatus.RECONNECTING -> "サーバー接続: 再接続中"
             },
-            color = if (state.connectionStatus == ConnectionStatus.CONNECTED) {
+            color = if (state.connectionMode == ConnectionMode.FCM_ONLY) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else if (state.connectionStatus == ConnectionStatus.CONNECTED) {
                 MaterialTheme.colorScheme.primary
             } else {
                 MaterialTheme.colorScheme.error
