@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
                             this@MainActivity,
                             Intent(this@MainActivity, PartnerConnectionService::class.java),
                         )
+                    } else if (registered?.connectionMode == ConnectionMode.FCM_ONLY) {
+                        stopService(Intent(this@MainActivity, PartnerConnectionService::class.java))
                     }
                 }
                 EnrollmentScreen(
