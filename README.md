@@ -81,6 +81,13 @@ docker compose -f deploy/compose.yaml run --rm \
 
 不要になったペアは、ペアIDを指定して削除できる。確認プロンプトを省略する場合だけ`--yes`を付ける。
 
+ペアIDが不明な場合は、一覧を表示する。
+
+```sh
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server pair-list
+```
+
 ```sh
 docker compose -f deploy/compose.yaml run --rm \
   --entrypoint /partner-watch-admin server \

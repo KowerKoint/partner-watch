@@ -26,13 +26,21 @@ type deviceInvite struct {
 	InviteCode string `json:"inviteCode"`
 }
 
+type pairListOutput struct {
+	Pairs []store.PairSummary `json:"pairs"`
+}
+
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "pair-create" && os.Args[1] != "pair-delete") {
-		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create|pair-delete [options]")
+	if len(os.Args) < 2 || (os.Args[1] != "pair-create" && os.Args[1] != "pair-delete" && os.Args[1] != "pair-list") {
+		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create|pair-list|pair-delete [options]")
 		os.Exit(2)
 	}
 	if os.Args[1] == "pair-delete" {
 		deletePair(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "pair-list" {
+		listPairs(os.Args[2:])
 		return
 	}
 
@@ -73,6 +81,26 @@ func main() {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(result); err != nil {
+		fatal(err.Error())
+	}
+}
+
+func listPairs(args []string) {
+	flags := flag.NewFlagSet("pair-list", flag.ExitOnError)
+	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
+	_ = flags.Parse(args)
+	database, err := store.Open(*dataDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() { _ = database.Close() }()
+	pairs, err := database.ListPairs(context.Background())
+	if err != nil {
+		fatal(err.Error())
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(pairListOutput{Pairs: pairs}); err != nil {
 		fatal(err.Error())
 	}
 }

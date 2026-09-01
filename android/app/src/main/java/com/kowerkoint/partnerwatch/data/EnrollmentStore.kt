@@ -44,6 +44,10 @@ class EnrollmentStore(private val context: Context) {
         }
     }
 
+    suspend fun clear() {
+        context.enrollmentDataStore.edit { it.clear() }
+    }
+
     private companion object {
         val SERVER_URL = stringPreferencesKey("server_url")
         val DEVICE_ID = stringPreferencesKey("device_id")

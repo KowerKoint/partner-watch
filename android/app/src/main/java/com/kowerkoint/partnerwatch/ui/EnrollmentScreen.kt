@@ -19,6 +19,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -46,6 +47,7 @@ fun EnrollmentScreen(
     onOpenAccessibilitySettings: () -> Unit,
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
+    onLogout: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -66,6 +68,7 @@ fun EnrollmentScreen(
                 onOpenAccessibilitySettings = onOpenAccessibilitySettings,
                 onRequestCapture = onRequestCapture,
                 onSavePhoto = onSavePhoto,
+                onLogout = onLogout,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -155,6 +158,7 @@ private fun RegisteredContent(
     onOpenAccessibilitySettings: () -> Unit,
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
+    onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -247,6 +251,9 @@ private fun RegisteredContent(
         DetailRow("端末ID", state.enrollment.deviceId)
         DetailRow("ペアID", state.enrollment.pairId)
         DetailRow("スロット", state.enrollment.slot.toString())
+        OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
+            Text("この端末の登録を解除")
+        }
     }
 }
 
@@ -272,6 +279,7 @@ private fun EnrollmentFormPreview() {
             onOpenAccessibilitySettings = {},
             onRequestCapture = {},
             onSavePhoto = {},
+            onLogout = {},
         )
     }
 }

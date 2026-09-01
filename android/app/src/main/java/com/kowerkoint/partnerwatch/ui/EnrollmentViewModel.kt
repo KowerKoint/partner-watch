@@ -74,6 +74,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private val photos = PhotoCollection(application.applicationContext)
     private val captureState = MutableStateFlow<CaptureUiState>(CaptureUiState.Idle)
     private var timeoutJob: Job? = null
+    private var registeredObservationJob: Job? = null
     private val earlyResults = mutableMapOf<String, CaptureCompletedEvent>()
     private val mutableState = MutableStateFlow<EnrollmentUiState>(EnrollmentUiState.Loading)
     val state: StateFlow<EnrollmentUiState> = mutableState.asStateFlow()
@@ -168,11 +169,26 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun logout() {
+        registeredObservationJob?.cancel()
+        timeoutJob?.cancel()
+        viewModelScope.launch {
+            capturePreferences.setAccepting(false)
+            store.clear()
+            getApplication<Application>().stopService(android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java))
+            mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
+        }
+    }
+
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
         runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
-        combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, captureState) { accepting, connected, connection, capture ->
-            EnrollmentUiState.Registered(enrollment, accepting, connected, connection, capture)
-        }.collect { mutableState.value = it }
+        registeredObservationJob?.cancel()
+        registeredObservationJob = viewModelScope.launch {
+            combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, captureState) { accepting, connected, connection, capture ->
+                EnrollmentUiState.Registered(enrollment, accepting, connected, connection, capture)
+            }.collect { mutableState.value = it }
+        }
+        registeredObservationJob?.join()
     }
 
     private fun failureMessage(failure: String): String = when (failure) {

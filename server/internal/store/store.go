@@ -39,6 +39,13 @@ type PairInvitations struct {
 	Invitations [2]string
 }
 
+type PairSummary struct {
+	PairID      string
+	PairName    string
+	CreatedAt   time.Time
+	DeviceCount int
+}
+
 type Enrollment struct {
 	DeviceID   string
 	PairID     string
@@ -589,6 +596,28 @@ func (s *Store) DeletePair(ctx context.Context, pairID string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ListPairs(ctx context.Context) ([]PairSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT pairs.id, pairs.name, pairs.created_at, COUNT(devices.id) FROM pairs LEFT JOIN devices ON devices.pair_id = pairs.id GROUP BY pairs.id, pairs.name, pairs.created_at ORDER BY pairs.created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list pairs: %w", err)
+	}
+	defer rows.Close()
+	var result []PairSummary
+	for rows.Next() {
+		var item PairSummary
+		var created int64
+		if err := rows.Scan(&item.PairID, &item.PairName, &created, &item.DeviceCount); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = time.Unix(created, 0).UTC()
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Store) EnrollDevice(
