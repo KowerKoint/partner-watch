@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.CancellationSignal
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,9 +35,12 @@ class LocationCollector(private val context:Context) {
         val providers=manager.getProviders(true).let { available ->
             listOf(LocationManager.FUSED_PROVIDER,if(precise)LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER)+available
         }.distinct().filter { runCatching{manager.isProviderEnabled(it)}.getOrDefault(false) }
+        Log.d(TAG,"location providers: ${providers.joinToString()}")
         val fresh=providers.firstOrNull()?.let { current(manager,it) }
-        if(fresh!=null)return fresh.toResult("FRESH")
-        val last=providers.mapNotNull{runCatching{manager.getLastKnownLocation(it)}.getOrNull()}.filter{it.ageMillis()<=15*60*1000L}.minByOrNull{it.ageMillis()}
+        if(fresh!=null){Log.d(TAG,"fresh location received from ${fresh.provider}");return fresh.toResult("FRESH")}
+        val candidates=providers.mapNotNull{provider->runCatching{manager.getLastKnownLocation(provider)}.getOrNull()?.also{Log.d(TAG,"cached location from $provider age=${it.ageMillis()}ms")}}
+        val last=candidates.filter{it.ageMillis()<=15*60*1000L}.minByOrNull{it.ageMillis()}
+        Log.d(TAG,if(last==null)"no usable cached location" else "using cached location from ${last.provider}")
         return last?.toResult("LAST_KNOWN")?:LocationResult("TIMEOUT")
     }
 
@@ -49,4 +53,5 @@ class LocationCollector(private val context:Context) {
     }
     private fun Location.ageMillis()=((SystemClock.elapsedRealtimeNanos()-elapsedRealtimeNanos)/1_000_000L).coerceAtLeast(0)
     private fun Location.toResult(source:String)=LocationResult("AVAILABLE",latitude,longitude,accuracy.toDouble(),Instant.now().minusMillis(ageMillis()),source)
+    private companion object { const val TAG="PartnerWatchLocation" }
 }
