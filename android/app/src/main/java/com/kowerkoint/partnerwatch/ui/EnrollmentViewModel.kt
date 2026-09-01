@@ -15,6 +15,7 @@ import com.kowerkoint.partnerwatch.connection.CaptureEventBus
 import com.kowerkoint.partnerwatch.connection.CaptureCompletedEvent
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 import com.kowerkoint.partnerwatch.connection.ConnectionStatusBus
+import com.kowerkoint.partnerwatch.connection.FcmTokenRegistrar
 import com.kowerkoint.partnerwatch.data.CaptureApi
 import com.kowerkoint.partnerwatch.data.CaptureRequestException
 import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
@@ -168,6 +169,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
+        runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
         combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, captureState) { accepting, connected, connection, capture ->
             EnrollmentUiState.Registered(enrollment, accepting, connected, connection, capture)
         }.collect { mutableState.value = it }
