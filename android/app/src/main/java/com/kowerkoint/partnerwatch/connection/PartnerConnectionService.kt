@@ -137,7 +137,6 @@ class PartnerConnectionService : Service() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 updateConnectionStatus(ConnectionStatus.CONNECTED)
                 scope.launch { processPendingCaptures(session) }
-                if (oneShotWakeup) scope.launch { delay(5_000); stopSelf() }
             }
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -161,6 +160,7 @@ class PartnerConnectionService : Service() {
             captureMutex.withLock {
                 if (event.expiresAt.isAfter(Instant.now())) processCapture(session, event.requestId)
             }
+            if (oneShotWakeup) stopSelf()
         }
     }
 
@@ -170,6 +170,7 @@ class PartnerConnectionService : Service() {
                 captureMutex.withLock { if (event.expiresAt.isAfter(Instant.now())) processCapture(session, event.requestId) }
             }
         }
+        if (oneShotWakeup) stopSelf()
     }
 
     private suspend fun processCapture(session: DeviceSession, requestId: String) {
