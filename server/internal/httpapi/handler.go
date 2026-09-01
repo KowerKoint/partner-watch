@@ -55,6 +55,13 @@ type CaptureStore interface {
 type PendingCaptureStore interface {
 	PendingCaptureRequests(ctx context.Context, deviceID string) ([]store.CaptureRequest, error)
 }
+type StatusStore interface {
+	CreateStatusRequest(context.Context, string) (store.StatusRequest, error)
+	PendingStatusRequests(context.Context, string) ([]store.StatusRequest, error)
+	CompleteStatusRequest(context.Context, string, string, store.BatteryReport) (store.StatusRequest, error)
+	PartnerStatusSnapshot(context.Context, string) (store.StatusSnapshot, error)
+	ClearStatusSnapshot(context.Context, string) error
+}
 
 type enrollmentRequest struct {
 	InvitationToken string `json:"invitationToken"`
@@ -97,6 +104,20 @@ type captureResultRequest struct {
 	ImageID string `json:"imageId"`
 	Failure string `json:"failure"`
 }
+type batteryResultRequest struct {
+	Status        string `json:"status"`
+	Percent       int    `json:"percent"`
+	ChargingState string `json:"chargingState"`
+}
+type statusResultRequest struct {
+	Battery batteryResultRequest `json:"battery"`
+}
+type statusSnapshotResponse struct {
+	DeviceID   string               `json:"deviceId"`
+	Battery    batteryResultRequest `json:"battery"`
+	ReportedAt time.Time            `json:"reportedAt"`
+	ExpiresAt  time.Time            `json:"expiresAt"`
+}
 
 const maxImageBytes = 10 * 1024 * 1024
 const maxImagePixels = 5_000_000
@@ -125,7 +146,102 @@ func newHandler(enroller Enroller, events *eventHub, sender ...WakeupSender) htt
 	if tokens, ok := enroller.(FCMTokenStore); ok && authenticated {
 		mux.HandleFunc("POST /v1/device/fcm-token", authenticate(authenticator, handleFCMToken(tokens)))
 	}
+	if statuses, ok := enroller.(StatusStore); ok && authenticated {
+		mux.HandleFunc("POST /v1/status-requests", authenticate(authenticator, handleStatusRequest(statuses, events, sender...)))
+		mux.HandleFunc("GET /v1/status-requests/pending", authenticate(authenticator, handlePendingStatusRequests(statuses)))
+		mux.HandleFunc("POST /v1/status-requests/{requestID}/result", authenticate(authenticator, handleStatusResult(statuses, events)))
+		mux.HandleFunc("GET /v1/partner-status", authenticate(authenticator, handlePartnerStatus(statuses)))
+		mux.HandleFunc("DELETE /v1/device-status", authenticate(authenticator, handleClearStatus(statuses)))
+	}
 	return securityHeaders(mux)
+}
+
+func statusResponse(v store.StatusRequest) captureRequestResponse {
+	return captureRequestResponse{RequestID: v.ID, Status: v.Status, CreatedAt: v.CreatedAt, ExpiresAt: v.ExpiresAt}
+}
+
+func handleStatusRequest(statuses StatusStore, events *eventHub, sender ...WakeupSender) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		v, err := statuses.CreateStatusRequest(r.Context(), deviceID)
+		if errors.Is(err, store.ErrPartnerNotFound) {
+			writeError(w, 409, "partner_unavailable")
+			return
+		}
+		if errors.Is(err, store.ErrRateLimited) {
+			writeError(w, 429, "rate_limited")
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		events.publish(v.TargetDeviceID, deviceEvent{Type: "status.requested", RequestID: v.ID, ExpiresAt: v.ExpiresAt.Format(time.RFC3339)})
+		if len(sender) > 0 && sender[0] != nil {
+			if err := sender[0].SendWakeup(r.Context(), v.TargetDeviceID, v.PairID); err != nil {
+				slog.Warn("FCM wakeup failed", "error", err)
+			}
+		}
+		writeJSON(w, 201, statusResponse(v))
+	}
+}
+func handlePendingStatusRequests(statuses StatusStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		items, err := statuses.PendingStatusRequests(r.Context(), deviceID)
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		out := pendingCaptureResponse{Requests: make([]captureRequestResponse, 0, len(items))}
+		for _, v := range items {
+			out.Requests = append(out.Requests, statusResponse(v))
+		}
+		writeJSON(w, 200, out)
+	}
+}
+func handleStatusResult(statuses StatusStore, events *eventHub) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		var body statusResultRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+		d.DisallowUnknownFields()
+		if d.Decode(&body) != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		v, err := statuses.CompleteStatusRequest(r.Context(), deviceID, r.PathValue("requestID"), store.BatteryReport{Status: body.Battery.Status, Percent: body.Battery.Percent, ChargingState: body.Battery.ChargingState})
+		if errors.Is(err, store.ErrStatusRequestNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		events.publish(v.RequesterDeviceID, deviceEvent{Type: "status.completed", RequestID: v.ID, Status: v.Status})
+		w.WriteHeader(204)
+	}
+}
+func handlePartnerStatus(statuses StatusStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		v, err := statuses.PartnerStatusSnapshot(r.Context(), deviceID)
+		if errors.Is(err, store.ErrStatusSnapshotNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		writeJSON(w, 200, statusSnapshotResponse{DeviceID: v.DeviceID, Battery: batteryResultRequest{Status: v.Battery.Status, Percent: v.Battery.Percent, ChargingState: v.Battery.ChargingState}, ReportedAt: v.ReportedAt, ExpiresAt: v.ExpiresAt})
+	}
+}
+func handleClearStatus(statuses StatusStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		if err := statuses.ClearStatusSnapshot(r.Context(), deviceID); err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		w.WriteHeader(204)
+	}
 }
 
 func handlePendingCaptureRequests(captures PendingCaptureStore) authenticatedHandler {

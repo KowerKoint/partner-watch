@@ -70,6 +70,8 @@ class MainActivity : ComponentActivity() {
                     onLogout = viewModel::logout,
                     onDisconnectForTest = viewModel::disconnectForTest,
                     onConnectionModeChanged = viewModel::setConnectionMode,
+                    onBatterySharingChanged = viewModel::setBatterySharing,
+                    onRequestPartnerStatus = viewModel::requestPartnerStatus,
                 )
             }
         }

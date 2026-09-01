@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
 import android.os.IBinder
+import android.os.BatteryManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -27,6 +28,8 @@ import com.kowerkoint.partnerwatch.data.EnrollmentStore
 import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
 import com.kowerkoint.partnerwatch.data.PendingCaptureApi
+import com.kowerkoint.partnerwatch.data.StatusApi
+import com.kowerkoint.partnerwatch.status.StatusPreferences
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +52,7 @@ import java.time.Instant
 import kotlin.math.min
 
 internal data class CaptureRequestedEvent(val requestId: String, val expiresAt: Instant)
+internal data class StatusRequestedEvent(val requestId: String, val expiresAt: Instant)
 
 internal fun parseCaptureRequestedEvent(text: String): CaptureRequestedEvent? {
     val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
@@ -56,6 +60,14 @@ internal fun parseCaptureRequestedEvent(text: String): CaptureRequestedEvent? {
     val requestId = json.optString("requestId")
     val expiresAt = runCatching { Instant.parse(json.optString("expiresAt")) }.getOrNull() ?: return null
     return CaptureRequestedEvent(requestId, expiresAt).takeIf { requestId.isNotBlank() }
+}
+
+internal fun parseStatusRequestedEvent(text: String): StatusRequestedEvent? {
+    val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+    if (json.optString("type") != "status.requested") return null
+    val requestId = json.optString("requestId")
+    val expiresAt = runCatching { Instant.parse(json.optString("expiresAt")) }.getOrNull() ?: return null
+    return StatusRequestedEvent(requestId, expiresAt).takeIf { requestId.isNotBlank() }
 }
 
 internal fun parseCaptureCompletedEvent(text: String): CaptureCompletedEvent? {
@@ -77,6 +89,8 @@ class PartnerConnectionService : Service() {
     private lateinit var pendingIntent: PendingIntent
     private val captureApi = CaptureApi(client)
     private val pendingCaptureApi = PendingCaptureApi(client)
+    private val statusApi = StatusApi(client)
+    private lateinit var statusPreferences: StatusPreferences
     private var connectionJob: Job? = null
     private var oneShotWakeup = false
 
@@ -85,6 +99,7 @@ class PartnerConnectionService : Service() {
         val security = DeviceSecurity()
         val store = EnrollmentStore(applicationContext)
         sessions = DeviceSessionRepository(store, security)
+        statusPreferences = StatusPreferences(applicationContext)
         uploader = CaptureUploader(
             applicationContext, CapturePreferences(applicationContext), JpegEncoder(),
             ImageRepository(ImageApi(client), sessions),
@@ -92,6 +107,7 @@ class PartnerConnectionService : Service() {
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
         createCaptureNotificationChannel()
+        createStatusNotificationChannel()
         pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -136,7 +152,7 @@ class PartnerConnectionService : Service() {
         val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 updateConnectionStatus(ConnectionStatus.CONNECTED)
-                scope.launch { processPendingCaptures(session) }
+                scope.launch { processPendingRequests(session) }
             }
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -154,6 +170,15 @@ class PartnerConnectionService : Service() {
 
     private fun handleEvent(session: DeviceSession, text: String) {
         parseCaptureCompletedEvent(text)?.let { CaptureEventBus.publish(it); return }
+        val completedJson = runCatching { JSONObject(text) }.getOrNull()
+        if (completedJson?.optString("type") == "status.completed") {
+            StatusEventBus.publish(StatusCompletedEvent(completedJson.optString("requestId")))
+            return
+        }
+        parseStatusRequestedEvent(text)?.let { event ->
+            if (event.expiresAt.isAfter(Instant.now())) scope.launch { processStatus(session, event.requestId) }
+            return
+        }
         val event = parseCaptureRequestedEvent(text) ?: return
         if (!event.expiresAt.isAfter(Instant.now())) return
         scope.launch {
@@ -164,13 +189,31 @@ class PartnerConnectionService : Service() {
         }
     }
 
-    private suspend fun processPendingCaptures(session: DeviceSession) {
+    private suspend fun processPendingRequests(session: DeviceSession) {
         runCatching { pendingCaptureApi.list(session) }.getOrDefault(emptyList()).forEach { event ->
             if (event.expiresAt.isAfter(Instant.now())) {
                 captureMutex.withLock { if (event.expiresAt.isAfter(Instant.now())) processCapture(session, event.requestId) }
             }
         }
+        runCatching { statusApi.pending(session) }.getOrDefault(emptyList()).forEach { event ->
+            if (event.expiresAt.isAfter(Instant.now())) processStatus(session, event.requestId)
+        }
         if (oneShotWakeup) stopSelf()
+    }
+
+    private suspend fun processStatus(session: DeviceSession, requestId: String) {
+        val enabled = statusPreferences.isSharingBattery()
+        val manager = getSystemService(BatteryManager::class.java)
+        val percent = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+        val charging = when (manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "CHARGING"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "DISCHARGING"
+            BatteryManager.BATTERY_STATUS_FULL -> "FULL"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "NOT_CHARGING"
+            else -> "UNKNOWN"
+        }
+        runCatching { statusApi.reportBattery(session, requestId, enabled, percent, charging) }
+            .onSuccess { showStatusSharedNotification(enabled, percent) }
     }
 
     private suspend fun processCapture(session: DeviceSession, requestId: String) {
@@ -203,6 +246,15 @@ class PartnerConnectionService : Service() {
         notificationManager.createNotificationChannel(
             NotificationChannel(CAPTURE_CHANNEL_ID, "撮影結果", NotificationManager.IMPORTANCE_DEFAULT),
         )
+    }
+
+    private fun createStatusNotificationChannel() {
+        notificationManager.createNotificationChannel(NotificationChannel(STATUS_CHANNEL_ID, "状態共有", NotificationManager.IMPORTANCE_DEFAULT))
+    }
+
+    private fun showStatusSharedNotification(enabled:Boolean,percent:Int) {
+        val text=if(enabled)"バッテリー残量（$percent%）を共有しました" else "バッテリーは共有しませんでした"
+        notificationManager.notify(STATUS_NOTIFICATION_ID,NotificationCompat.Builder(this,STATUS_CHANNEL_ID).setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("相手から状態の更新要求がありました").setContentText(text).setAutoCancel(true).setContentIntent(pendingIntent).build())
     }
 
     private fun showCaptureNotification(capture: CapturedUpload) {
@@ -248,5 +300,7 @@ class PartnerConnectionService : Service() {
         const val NOTIFICATION_ID = 1001
         const val CAPTURE_CHANNEL_ID = "capture_result"
         const val CAPTURE_NOTIFICATION_ID = 1002
+        const val STATUS_CHANNEL_ID = "status_shared"
+        const val STATUS_NOTIFICATION_ID = 1003
     }
 }

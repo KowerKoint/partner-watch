@@ -151,6 +151,42 @@ func TestCaptureRequestRejectsWrongTargetAndExpiredResult(t *testing.T) {
 	}
 }
 
+func TestStatusRequestStoresLatestPartnerBatteryAndClearsIt(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Now().UTC()
+	s.now = func() time.Time { return base }
+	request, err := s.CreateStatusRequest(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.TargetDeviceID != second.DeviceID {
+		t.Fatalf("target=%q", request.TargetDeviceID)
+	}
+	if _, err := s.CreateStatusRequest(ctx, first.DeviceID); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("rate limit=%v", err)
+	}
+	pending, err := s.PendingStatusRequests(ctx, second.DeviceID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending=%v,%v", pending, err)
+	}
+	_, err = s.CompleteStatusRequest(ctx, second.DeviceID, request.ID, BatteryReport{Status: "AVAILABLE", Percent: 73, ChargingState: "CHARGING"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.PartnerStatusSnapshot(ctx, first.DeviceID)
+	if err != nil || snapshot.Battery.Percent != 73 || snapshot.Battery.ChargingState != "CHARGING" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	if err := s.ClearStatusSnapshot(ctx, second.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PartnerStatusSnapshot(ctx, first.DeviceID); !errors.Is(err, ErrStatusSnapshotNotFound) {
+		t.Fatalf("after clear=%v", err)
+	}
+}
+
 func enrollTestPair(t *testing.T, s *Store) (Enrollment, Enrollment) {
 	t.Helper()
 	ctx := context.Background()

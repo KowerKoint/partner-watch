@@ -71,8 +71,16 @@ func maintainData(database *store.Store, logger *slog.Logger) {
 			logger.Info("expired capture requests", "count", count)
 		}
 	}
+	expireStatuses := func() {
+		if count, err := database.ExpireStatusRequests(context.Background()); err != nil {
+			logger.Error("failed to expire status requests", "error", err)
+		} else if count > 0 {
+			logger.Info("expired status requests", "count", count)
+		}
+	}
 	cleanupImages()
 	expireCaptures()
+	expireStatuses()
 	imageTicker := time.NewTicker(10 * time.Minute)
 	captureTicker := time.NewTicker(5 * time.Second)
 	defer imageTicker.Stop()
@@ -83,6 +91,7 @@ func maintainData(database *store.Store, logger *slog.Logger) {
 			cleanupImages()
 		case <-captureTicker.C:
 			expireCaptures()
+			expireStatuses()
 		}
 	}
 }

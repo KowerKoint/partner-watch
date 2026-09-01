@@ -20,6 +20,8 @@ var ErrImageNotFound = errors.New("image not found")
 var ErrPartnerNotFound = errors.New("partner not found")
 var ErrRateLimited = errors.New("capture request rate limited")
 var ErrCaptureRequestNotFound = errors.New("capture request not found")
+var ErrStatusRequestNotFound = errors.New("status request not found")
+var ErrStatusSnapshotNotFound = errors.New("status snapshot not found")
 var ErrPairNotFound = errors.New("pair not found")
 
 type Store struct {
@@ -70,6 +72,23 @@ type CaptureRequest struct {
 	Failure           string
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
+}
+
+type StatusRequest struct {
+	ID, PairID, RequesterDeviceID, TargetDeviceID, Status string
+	CreatedAt, ExpiresAt                                  time.Time
+}
+
+type BatteryReport struct {
+	Status        string
+	Percent       int
+	ChargingState string
+}
+
+type StatusSnapshot struct {
+	DeviceID              string
+	Battery               BatteryReport
+	ReportedAt, ExpiresAt time.Time
 }
 
 const schema = `
@@ -142,6 +161,29 @@ CREATE TABLE IF NOT EXISTS device_fcm_tokens (
     device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     token TEXT NOT NULL,
     updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_requests (
+    id TEXT PRIMARY KEY,
+    pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+    requester_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    target_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'COMPLETED', 'TIMEOUT')),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS status_requests_requester_created_idx ON status_requests(requester_device_id, created_at);
+CREATE INDEX IF NOT EXISTS status_requests_expires_at_idx ON status_requests(expires_at);
+
+CREATE TABLE IF NOT EXISTS status_snapshots (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+    battery_status TEXT NOT NULL,
+    battery_percent INTEGER,
+    charging_state TEXT,
+    reported_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
 );
 `
 
@@ -639,6 +681,162 @@ func (s *Store) PendingCaptureRequests(ctx context.Context, deviceID string) ([]
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) CreateStatusRequest(ctx context.Context, requesterDeviceID string) (StatusRequest, error) {
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StatusRequest{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var pairID, targetID string
+	err = tx.QueryRowContext(ctx, `SELECT a.pair_id, b.id FROM devices a JOIN devices b ON b.pair_id=a.pair_id AND b.id<>a.id WHERE a.id=?`, requesterDeviceID).Scan(&pairID, &targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StatusRequest{}, ErrPartnerNotFound
+	}
+	if err != nil {
+		return StatusRequest{}, fmt.Errorf("find status target: %w", err)
+	}
+	var recent, hourly int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN created_at > ? THEN 1 END), COUNT(*) FROM status_requests WHERE requester_device_id=? AND created_at>?`, now.Add(-time.Minute).Unix(), requesterDeviceID, now.Add(-time.Hour).Unix()).Scan(&recent, &hourly)
+	if err != nil {
+		return StatusRequest{}, fmt.Errorf("count status requests: %w", err)
+	}
+	if recent > 0 || hourly >= 20 {
+		return StatusRequest{}, ErrRateLimited
+	}
+	id, err := secret.Generate(16)
+	if err != nil {
+		return StatusRequest{}, err
+	}
+	expires := now.Add(time.Minute)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO status_requests(id,pair_id,requester_device_id,target_device_id,status,created_at,expires_at) VALUES(?,?,?,?,'PENDING',?,?)`, id, pairID, requesterDeviceID, targetID, now.Unix(), expires.Unix()); err != nil {
+		return StatusRequest{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) VALUES(?,?,'status.requested',?)`, pairID, requesterDeviceID, now.Unix()); err != nil {
+		return StatusRequest{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return StatusRequest{}, err
+	}
+	return StatusRequest{ID: id, PairID: pairID, RequesterDeviceID: requesterDeviceID, TargetDeviceID: targetID, Status: "PENDING", CreatedAt: now, ExpiresAt: expires}, nil
+}
+
+func (s *Store) PendingStatusRequests(ctx context.Context, deviceID string) ([]StatusRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,pair_id,requester_device_id,target_device_id,created_at,expires_at FROM status_requests WHERE target_device_id=? AND status='PENDING' AND expires_at>? ORDER BY created_at`, deviceID, s.now().UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []StatusRequest
+	for rows.Next() {
+		var v StatusRequest
+		var created, expires int64
+		if err := rows.Scan(&v.ID, &v.PairID, &v.RequesterDeviceID, &v.TargetDeviceID, &created, &expires); err != nil {
+			return nil, err
+		}
+		v.Status = "PENDING"
+		v.CreatedAt = time.Unix(created, 0).UTC()
+		v.ExpiresAt = time.Unix(expires, 0).UTC()
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) CompleteStatusRequest(ctx context.Context, targetID, requestID string, battery BatteryReport) (StatusRequest, error) {
+	validCharging := battery.ChargingState == "CHARGING" || battery.ChargingState == "DISCHARGING" || battery.ChargingState == "FULL" || battery.ChargingState == "NOT_CHARGING" || battery.ChargingState == "UNKNOWN"
+	validAvailable := battery.Status == "AVAILABLE" && battery.Percent >= 0 && battery.Percent <= 100 && validCharging
+	validDisabled := battery.Status == "DISABLED" && battery.Percent == 0 && battery.ChargingState == ""
+	if !validAvailable && !validDisabled {
+		return StatusRequest{}, ErrStatusRequestNotFound
+	}
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StatusRequest{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var v StatusRequest
+	var created, expires int64
+	err = tx.QueryRowContext(ctx, `SELECT id,pair_id,requester_device_id,target_device_id,created_at,expires_at FROM status_requests WHERE id=? AND target_device_id=? AND status='PENDING' AND expires_at>?`, requestID, targetID, now.Unix()).Scan(&v.ID, &v.PairID, &v.RequesterDeviceID, &v.TargetDeviceID, &created, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StatusRequest{}, ErrStatusRequestNotFound
+	}
+	if err != nil {
+		return StatusRequest{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE status_requests SET status='COMPLETED',completed_at=? WHERE id=? AND status='PENDING'`, now.Unix(), requestID); err != nil {
+		return StatusRequest{}, err
+	}
+	percent, charging := any(nil), any(nil)
+	if battery.Status == "AVAILABLE" {
+		percent = battery.Percent
+		charging = battery.ChargingState
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO status_snapshots(device_id,pair_id,battery_status,battery_percent,charging_state,reported_at,expires_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET battery_status=excluded.battery_status,battery_percent=excluded.battery_percent,charging_state=excluded.charging_state,reported_at=excluded.reported_at,expires_at=excluded.expires_at`, targetID, v.PairID, battery.Status, percent, charging, now.Unix(), now.Add(time.Hour).Unix()); err != nil {
+		return StatusRequest{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) VALUES(?,?,'status.completed',?)`, v.PairID, targetID, now.Unix()); err != nil {
+		return StatusRequest{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return StatusRequest{}, err
+	}
+	v.Status = "COMPLETED"
+	v.CreatedAt = time.Unix(created, 0).UTC()
+	v.ExpiresAt = time.Unix(expires, 0).UTC()
+	return v, nil
+}
+
+func (s *Store) PartnerStatusSnapshot(ctx context.Context, requesterID string) (StatusSnapshot, error) {
+	var v StatusSnapshot
+	var percent sql.NullInt64
+	var charging sql.NullString
+	var reported, expires int64
+	err := s.db.QueryRowContext(ctx, `SELECT s.device_id,s.battery_status,s.battery_percent,s.charging_state,s.reported_at,s.expires_at FROM devices a JOIN devices b ON b.pair_id=a.pair_id AND b.id<>a.id JOIN status_snapshots s ON s.device_id=b.id WHERE a.id=? AND s.expires_at>?`, requesterID, s.now().UTC().Unix()).Scan(&v.DeviceID, &v.Battery.Status, &percent, &charging, &reported, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StatusSnapshot{}, ErrStatusSnapshotNotFound
+	}
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	if percent.Valid {
+		v.Battery.Percent = int(percent.Int64)
+	}
+	v.Battery.ChargingState = charging.String
+	v.ReportedAt = time.Unix(reported, 0).UTC()
+	v.ExpiresAt = time.Unix(expires, 0).UTC()
+	return v, nil
+}
+
+func (s *Store) ClearStatusSnapshot(ctx context.Context, deviceID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM status_snapshots WHERE device_id=?`, deviceID)
+	return err
+}
+
+func (s *Store) ExpireStatusRequests(ctx context.Context) (int, error) {
+	now := s.now().UTC().Unix()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) SELECT pair_id,requester_device_id,'status.timeout',? FROM status_requests WHERE status='PENDING' AND expires_at<=?`, now, now); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE status_requests SET status='TIMEOUT',completed_at=? WHERE status='PENDING' AND expires_at<=?`, now, now)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(count), nil
 }
 
 func (s *Store) EnrollDevice(

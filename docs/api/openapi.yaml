@@ -152,6 +152,77 @@ paths:
           description: Device credential is invalid.
         "404":
           description: Request does not exist, expired, completed, or belongs to another device.
+  /v1/status-requests:
+    post:
+      operationId: createStatusRequest
+      description: Requests the paired device's currently enabled status fields. Limited to once per minute and 20 times per hour.
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Status request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusRequest"
+        "409":
+          description: The paired device is not enrolled.
+        "429":
+          description: Status request rate limit was exceeded.
+  /v1/status-requests/pending:
+    get:
+      operationId: listPendingStatusRequests
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Unexpired requests targeting this device.
+  /v1/status-requests/{requestId}/result:
+    post:
+      operationId: reportStatusResult
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusResult"
+      responses:
+        "204":
+          description: Partial status result accepted.
+        "404":
+          description: Request does not exist, expired, completed, or belongs to another device.
+  /v1/partner-status:
+    get:
+      operationId: getPartnerStatus
+      description: Returns the paired device's latest unexpired snapshot.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Latest snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusSnapshot"
+        "404":
+          description: No unexpired snapshot exists.
+  /v1/device-status:
+    delete:
+      operationId: clearOwnStatus
+      description: Deletes the authenticated device's currently stored snapshot.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Snapshot deleted or did not exist.
 components:
   securitySchemes:
     bearerAuth:
@@ -242,6 +313,59 @@ components:
           type: string
           enum: ["", DISABLED, SERVICE_UNAVAILABLE, LOCKED, CAPTURE_PROTECTED, INTERNAL_ERROR]
           description: Empty for READY and classified for FAILED.
+    StatusRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, status, createdAt, expiresAt]
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          const: PENDING
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    BatteryStatus:
+      type: object
+      additionalProperties: false
+      required: [status, percent, chargingState]
+      properties:
+        status:
+          type: string
+          enum: [AVAILABLE, DISABLED]
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        chargingState:
+          type: string
+          enum: ["", CHARGING, DISCHARGING, FULL, NOT_CHARGING, UNKNOWN]
+    StatusResult:
+      type: object
+      additionalProperties: false
+      required: [battery]
+      properties:
+        battery:
+          $ref: "#/components/schemas/BatteryStatus"
+    StatusSnapshot:
+      type: object
+      additionalProperties: false
+      required: [deviceId, battery, reportedAt, expiresAt]
+      properties:
+        deviceId:
+          type: string
+        battery:
+          $ref: "#/components/schemas/BatteryStatus"
+        reportedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
     DeviceEvent:
       oneOf:
         - type: object

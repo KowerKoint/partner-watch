@@ -28,4 +28,14 @@ class PartnerConnectionServiceTest {
         )
         assertEquals("image", event?.imageId)
     }
+
+    @Test
+    fun parsesStatusRequestEvent() {
+        val event = parseStatusRequestedEvent(
+            """{"type":"status.requested","requestId":"status-request","expiresAt":"2026-09-01T01:00:00Z"}""",
+        )
+        assertEquals("status-request", event?.requestId)
+        assertEquals(Instant.parse("2026-09-01T01:00:00Z"), event?.expiresAt)
+        assertNull(parseStatusRequestedEvent("""{"type":"capture.requested"}"""))
+    }
 }

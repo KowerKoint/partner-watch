@@ -24,6 +24,10 @@ import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
 import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
 import com.kowerkoint.partnerwatch.data.PhotoCollection
+import com.kowerkoint.partnerwatch.data.StatusApi
+import com.kowerkoint.partnerwatch.data.PartnerBatteryStatus
+import com.kowerkoint.partnerwatch.status.StatusPreferences
+import com.kowerkoint.partnerwatch.connection.StatusEventBus
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,8 +56,12 @@ sealed interface EnrollmentUiState {
         val connectionStatus: ConnectionStatus = ConnectionStatus.STARTING,
         val connectionMode: ConnectionMode = ConnectionMode.ALWAYS_CONNECTED,
         val capture: CaptureUiState = CaptureUiState.Idle,
+        val sharingBattery: Boolean = false,
+        val partnerBattery: BatteryUiState = BatteryUiState.Idle,
     ) : EnrollmentUiState
 }
+
+sealed interface BatteryUiState { data object Idle:BatteryUiState; data object Loading:BatteryUiState; data class Available(val value:PartnerBatteryStatus):BatteryUiState; data class Message(val text:String):BatteryUiState }
 
 sealed interface CaptureUiState {
     data object Idle : CaptureUiState
@@ -70,6 +78,9 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     )
     private val capturePreferences = CapturePreferences(application.applicationContext)
     private val connectionPreferences = ConnectionPreferences(application.applicationContext)
+    private val statusPreferences = StatusPreferences(application.applicationContext)
+    private val statusApi = StatusApi()
+    private val batteryState = MutableStateFlow<BatteryUiState>(BatteryUiState.Idle)
     private val security = DeviceSecurity()
     private val store = EnrollmentStore(application.applicationContext)
     private val sessions = DeviceSessionRepository(store, security)
@@ -94,6 +105,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
+        viewModelScope.launch { StatusEventBus.events.collect { refreshPartnerBattery() } }
         viewModelScope.launch {
             val enrollment = repository.load()
             if (enrollment == null) {
@@ -133,6 +145,23 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     fun setCaptureAccepting(value: Boolean) {
         if (mutableState.value !is EnrollmentUiState.Registered) return
         viewModelScope.launch { capturePreferences.setAccepting(value) }
+    }
+
+    fun setBatterySharing(value:Boolean) { viewModelScope.launch { statusPreferences.setSharingBattery(value); if(!value)runCatching{statusApi.clearOwnStatus(sessions.load())} } }
+    fun requestPartnerStatus() { viewModelScope.launch {
+        batteryState.value=BatteryUiState.Loading
+        try {
+            val session=sessions.load(); val started=java.time.Instant.now(); val created=statusApi.create(session)
+            while (System.currentTimeMillis() < created.expiresAt.toEpochMilli()) {
+                delay(1_000)
+                statusApi.partner(session)?.takeIf { !it.reportedAt.isBefore(started) }?.let { batteryState.value=BatteryUiState.Available(it); return@launch }
+            }
+            batteryState.value=BatteryUiState.Message("状態更新がタイムアウトしました")
+        } catch(e:Exception){ batteryState.value=BatteryUiState.Message(e.message?:"状態更新を要求できませんでした") }
+    } }
+
+    private suspend fun refreshPartnerBattery() {
+        batteryState.value = try { statusApi.partner(sessions.load())?.let { BatteryUiState.Available(it) } ?: BatteryUiState.Message("相手の状態はまだ共有されていません") } catch (_:Exception) { BatteryUiState.Message("相手の状態を取得できませんでした") }
     }
 
     fun requestCapture() {
@@ -178,6 +207,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         timeoutJob?.cancel()
         viewModelScope.launch {
             capturePreferences.setAccepting(false)
+            statusPreferences.setSharingBattery(false)
             store.clear()
             getApplication<Application>().stopService(android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java))
             mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
@@ -196,10 +226,12 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
 
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
         runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
+        runCatching { refreshPartnerBattery() }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
-            combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, captureState) { accepting, connected, connection, mode, capture ->
-                EnrollmentUiState.Registered(enrollment, accepting, connected, connection, mode, capture)
+            val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery) { accepting, battery -> accepting to battery }
+            combine(localSettings, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, combine(captureState,batteryState){capture,battery->capture to battery}) { settings, connected, connection, mode, remote ->
+                EnrollmentUiState.Registered(enrollment, settings.first, connected, connection, mode, remote.first, settings.second, remote.second)
             }.collect { mutableState.value = it }
         }
         registeredObservationJob?.join()

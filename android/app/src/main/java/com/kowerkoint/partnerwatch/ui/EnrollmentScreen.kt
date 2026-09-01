@@ -52,6 +52,8 @@ fun EnrollmentScreen(
     onLogout: () -> Unit,
     onDisconnectForTest: () -> Unit,
     onConnectionModeChanged: (ConnectionMode) -> Unit,
+    onBatterySharingChanged: (Boolean) -> Unit,
+    onRequestPartnerStatus: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -75,6 +77,8 @@ fun EnrollmentScreen(
                 onLogout = onLogout,
                 onDisconnectForTest = onDisconnectForTest,
                 onConnectionModeChanged = onConnectionModeChanged,
+                onBatterySharingChanged = onBatterySharingChanged,
+                onRequestPartnerStatus = onRequestPartnerStatus,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -167,6 +171,8 @@ private fun RegisteredContent(
     onLogout: () -> Unit,
     onDisconnectForTest: () -> Unit,
     onConnectionModeChanged: (ConnectionMode) -> Unit,
+    onBatterySharingChanged: (Boolean) -> Unit,
+    onRequestPartnerStatus: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -225,6 +231,26 @@ private fun RegisteredContent(
                 }
                 capture.savedMessage?.let { Text(it) }
             }
+        }
+        HorizontalDivider()
+        Text("相手のバッテリー", style = MaterialTheme.typography.titleLarge)
+        Button(onClick = onRequestPartnerStatus, enabled = state.partnerBattery !is BatteryUiState.Loading, modifier = Modifier.fillMaxWidth()) {
+            Text(if (state.partnerBattery is BatteryUiState.Loading) "更新を待っています…" else "現在の情報を更新")
+        }
+        when (val battery=state.partnerBattery) {
+            BatteryUiState.Idle -> Text("まだ状態を取得していません。")
+            BatteryUiState.Loading -> CircularProgressIndicator(modifier=Modifier.align(Alignment.CenterHorizontally))
+            is BatteryUiState.Message -> Text(battery.text, color=MaterialTheme.colorScheme.error)
+            is BatteryUiState.Available -> if (battery.value.status=="AVAILABLE") {
+                Text("${battery.value.percent}%・${chargingLabel(battery.value.chargingState)}", style=MaterialTheme.typography.headlineSmall)
+                Text("取得日時: ${battery.value.reportedAt}", style=MaterialTheme.typography.bodySmall)
+            } else Text("相手はバッテリー共有を無効にしています。")
+        }
+        HorizontalDivider()
+        Text("現在地とバッテリーの共有", style = MaterialTheme.typography.titleLarge)
+        Row(modifier=Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+            Column(modifier=Modifier.weight(1f)) { Text("バッテリーを共有",style=MaterialTheme.typography.titleMedium);Text("要求された時だけ残量と充電状態を共有します",style=MaterialTheme.typography.bodySmall) }
+            Switch(checked=state.sharingBattery,onCheckedChange=onBatterySharingChanged)
         }
         HorizontalDivider()
         Text("画面撮影", style = MaterialTheme.typography.titleLarge)
@@ -301,6 +327,10 @@ private fun EnrollmentFormPreview() {
             onLogout = {},
             onDisconnectForTest = {},
             onConnectionModeChanged = {},
+            onBatterySharingChanged = {},
+            onRequestPartnerStatus = {},
         )
     }
 }
+
+private fun chargingLabel(value:String?)=when(value){"CHARGING"->"充電中";"DISCHARGING"->"放電中";"FULL"->"満充電";"NOT_CHARGING"->"充電していません";else->"状態不明"}
