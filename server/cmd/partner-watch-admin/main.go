@@ -27,9 +27,13 @@ type deviceInvite struct {
 }
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "pair-create" {
-		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create [options]")
+	if len(os.Args) < 2 || (os.Args[1] != "pair-create" && os.Args[1] != "pair-delete") {
+		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create|pair-delete [options]")
 		os.Exit(2)
+	}
+	if os.Args[1] == "pair-delete" {
+		deletePair(os.Args[2:])
+		return
 	}
 
 	flags := flag.NewFlagSet("pair-create", flag.ExitOnError)
@@ -71,6 +75,35 @@ func main() {
 	if err := encoder.Encode(result); err != nil {
 		fatal(err.Error())
 	}
+}
+
+func deletePair(args []string) {
+	flags := flag.NewFlagSet("pair-delete", flag.ExitOnError)
+	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
+	pairID := flags.String("pair-id", "", "pair ID to delete")
+	yes := flags.Bool("yes", false, "skip confirmation")
+	_ = flags.Parse(args)
+	if strings.TrimSpace(*pairID) == "" {
+		fatal("pair-id is required")
+	}
+	if !*yes {
+		fmt.Printf("Delete pair %s and all its devices, requests, audit history, and temporary images? [y/N] ", *pairID)
+		var answer string
+		_, _ = fmt.Scanln(&answer)
+		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+			fmt.Fprintln(os.Stderr, "cancelled")
+			return
+		}
+	}
+	database, err := store.Open(*dataDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() { _ = database.Close() }()
+	if err := database.DeletePair(context.Background(), *pairID); err != nil {
+		fatal(err.Error())
+	}
+	fmt.Printf("deleted pair %s\n", *pairID)
 }
 
 func normalizeServerURL(value string) (string, error) {

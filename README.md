@@ -79,4 +79,12 @@ docker compose -f deploy/compose.yaml run --rm \
   pair-create --name "Partner Watch"
 ```
 
+不要になったペアは、ペアIDを指定して削除できる。確認プロンプトを省略する場合だけ`--yes`を付ける。
+
+```sh
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server \
+  pair-delete --pair-id "PAIR_ID"
+```
+
 秘密情報、SQLite DB、一時画像、Firebaseサービスアカウント、Android署名鍵はGitへ追加しない。

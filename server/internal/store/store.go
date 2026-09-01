@@ -20,6 +20,7 @@ var ErrImageNotFound = errors.New("image not found")
 var ErrPartnerNotFound = errors.New("partner not found")
 var ErrRateLimited = errors.New("capture request rate limited")
 var ErrCaptureRequestNotFound = errors.New("capture request not found")
+var ErrPairNotFound = errors.New("pair not found")
 
 type Store struct {
 	db      *sql.DB
@@ -552,6 +553,42 @@ func (s *Store) CreatePair(ctx context.Context, name string, expiresAt time.Time
 		return PairInvitations{}, fmt.Errorf("commit create pair: %w", err)
 	}
 	return result, nil
+}
+
+func (s *Store) DeletePair(ctx context.Context, pairID string) error {
+	pairID = strings.TrimSpace(pairID)
+	if pairID == "" {
+		return ErrPairNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT file_name FROM images WHERE pair_id = ?", pairID)
+	if err != nil {
+		return fmt.Errorf("list pair images: %w", err)
+	}
+	var files []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		files = append(files, name)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, "DELETE FROM pairs WHERE id = ?", pairID)
+	if err != nil {
+		return fmt.Errorf("delete pair: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return ErrPairNotFound
+	}
+	for _, name := range files {
+		if err := os.Remove(filepath.Join(s.dataDir, "images", name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete pair image file: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) EnrollDevice(
