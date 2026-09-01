@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.CancellationSignal
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -35,8 +36,7 @@ class LocationCollector(private val context:Context) {
         }.distinct().filter { runCatching{manager.isProviderEnabled(it)}.getOrDefault(false) }
         val fresh=providers.firstOrNull()?.let { current(manager,it) }
         if(fresh!=null)return fresh.toResult("FRESH")
-        val cutoff=System.currentTimeMillis()-15*60*1000L
-        val last=providers.mapNotNull{runCatching{manager.getLastKnownLocation(it)}.getOrNull()}.filter{it.time>=cutoff}.maxByOrNull{it.time}
+        val last=providers.mapNotNull{runCatching{manager.getLastKnownLocation(it)}.getOrNull()}.filter{it.ageMillis()<=15*60*1000L}.minByOrNull{it.ageMillis()}
         return last?.toResult("LAST_KNOWN")?:LocationResult("TIMEOUT")
     }
 
@@ -47,5 +47,6 @@ class LocationCollector(private val context:Context) {
                 .onFailure { if(continuation.isActive)continuation.resume(null) }
         }
     }
-    private fun Location.toResult(source:String)=LocationResult("AVAILABLE",latitude,longitude,accuracy.toDouble(),Instant.ofEpochMilli(time),source)
+    private fun Location.ageMillis()=((SystemClock.elapsedRealtimeNanos()-elapsedRealtimeNanos)/1_000_000L).coerceAtLeast(0)
+    private fun Location.toResult(source:String)=LocationResult("AVAILABLE",latitude,longitude,accuracy.toDouble(),Instant.now().minusMillis(ageMillis()),source)
 }
