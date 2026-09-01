@@ -115,6 +115,13 @@ func TestCaptureRequestRateLimitAndCompletion(t *testing.T) {
 	if completed.Status != "READY" || completed.ImageID != image.ID {
 		t.Fatalf("completed = %+v", completed)
 	}
+	polled, err := s.CaptureRequestForRequester(ctx, first.DeviceID, request.ID)
+	if err != nil || polled.Status != "READY" || polled.ImageID != image.ID {
+		t.Fatalf("polled=%+v err=%v", polled, err)
+	}
+	if _, err := s.CaptureRequestForRequester(ctx, second.DeviceID, request.ID); !errors.Is(err, ErrCaptureRequestNotFound) {
+		t.Fatalf("target poll=%v", err)
+	}
 	if _, err := s.CompleteCaptureRequest(ctx, second.DeviceID, request.ID, "READY", image.ID, ""); !errors.Is(err, ErrCaptureRequestNotFound) {
 		t.Fatalf("duplicate completion error = %v", err)
 	}
@@ -171,7 +178,7 @@ func TestStatusRequestStoresLatestPartnerBatteryAndClearsIt(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending=%v,%v", pending, err)
 	}
-	_, err = s.CompleteStatusRequest(ctx, second.DeviceID, request.ID, BatteryReport{Status: "AVAILABLE", Percent: 73, ChargingState: "CHARGING"})
+	_, err = s.CompleteStatusRequest(ctx, second.DeviceID, request.ID, BatteryReport{Status: "AVAILABLE", Percent: 73, ChargingState: "CHARGING"}, LocationReport{Status: "DISABLED"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +186,35 @@ func TestStatusRequestStoresLatestPartnerBatteryAndClearsIt(t *testing.T) {
 	if err != nil || snapshot.Battery.Percent != 73 || snapshot.Battery.ChargingState != "CHARGING" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
-	if err := s.ClearStatusSnapshot(ctx, second.DeviceID); err != nil {
+	if err := s.ClearStatusField(ctx, second.DeviceID, "battery"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PartnerStatusSnapshot(ctx, first.DeviceID); !errors.Is(err, ErrStatusSnapshotNotFound) {
-		t.Fatalf("after clear=%v", err)
+	snapshot, err = s.PartnerStatusSnapshot(ctx, first.DeviceID)
+	if err != nil || snapshot.Battery.Status != "DISABLED" {
+		t.Fatalf("after clear=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestStatusRequestStoresLocation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Now().UTC()
+	s.now = func() time.Time { return base }
+	r, err := s.CreateStatusRequest(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.CompleteStatusRequest(ctx, second.DeviceID, r.ID, BatteryReport{Status: "DISABLED"}, LocationReport{Status: "AVAILABLE", Latitude: 35.6812, Longitude: 139.7671, AccuracyMeters: 12.5, ObservedAt: base, Source: "FRESH"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.PartnerStatusSnapshot(ctx, first.DeviceID)
+	if err != nil || v.Location.Status != "AVAILABLE" || v.Location.Latitude != 35.6812 {
+		t.Fatalf("snapshot=%+v err=%v", v, err)
+	}
+	if err = s.ClearStatusField(ctx, second.DeviceID, "location"); err != nil {
+		t.Fatal(err)
 	}
 }
 

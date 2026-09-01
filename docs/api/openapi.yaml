@@ -152,6 +152,23 @@ paths:
           description: Device credential is invalid.
         "404":
           description: Request does not exist, expired, completed, or belongs to another device.
+  /v1/capture-requests/{requestId}:
+    get:
+      operationId: getCaptureRequest
+      description: Returns a request to its requester, including its terminal result for power-saving clients.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current request state.
+        "404":
+          description: Request does not exist or belongs to another device.
   /v1/status-requests:
     post:
       operationId: createStatusRequest
@@ -214,12 +231,19 @@ paths:
                 $ref: "#/components/schemas/StatusSnapshot"
         "404":
           description: No unexpired snapshot exists.
-  /v1/device-status:
+  /v1/device-status/{field}:
     delete:
-      operationId: clearOwnStatus
-      description: Deletes the authenticated device's currently stored snapshot.
+      operationId: clearOwnStatusField
+      description: Clears one field from the authenticated device's currently stored snapshot.
       security:
         - bearerAuth: []
+      parameters:
+        - name: field
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [battery, location]
       responses:
         "204":
           description: Snapshot deleted or did not exist.
@@ -347,19 +371,48 @@ components:
     StatusResult:
       type: object
       additionalProperties: false
-      required: [battery]
+      required: [battery, location]
       properties:
         battery:
           $ref: "#/components/schemas/BatteryStatus"
+        location:
+          $ref: "#/components/schemas/LocationStatus"
+    LocationStatus:
+      type: object
+      additionalProperties: false
+      required: [status, latitude, longitude, accuracyMeters, observedAt, source]
+      properties:
+        status:
+          type: string
+          enum: [AVAILABLE, DISABLED, PERMISSION_DENIED, SETTING_OFF, UNAVAILABLE, TIMEOUT]
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+        accuracyMeters:
+          type: number
+          minimum: 0
+        observedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: ["", FRESH, LAST_KNOWN]
     StatusSnapshot:
       type: object
       additionalProperties: false
-      required: [deviceId, battery, reportedAt, expiresAt]
+      required: [deviceId, battery, location, reportedAt, expiresAt]
       properties:
         deviceId:
           type: string
         battery:
           $ref: "#/components/schemas/BatteryStatus"
+        location:
+          $ref: "#/components/schemas/LocationStatus"
         reportedAt:
           type: string
           format: date-time

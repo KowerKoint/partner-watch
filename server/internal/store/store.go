@@ -84,10 +84,17 @@ type BatteryReport struct {
 	Percent       int
 	ChargingState string
 }
+type LocationReport struct {
+	Status                              string
+	Latitude, Longitude, AccuracyMeters float64
+	ObservedAt                          time.Time
+	Source                              string
+}
 
 type StatusSnapshot struct {
 	DeviceID              string
 	Battery               BatteryReport
+	Location              LocationReport
 	ReportedAt, ExpiresAt time.Time
 }
 
@@ -182,6 +189,12 @@ CREATE TABLE IF NOT EXISTS status_snapshots (
     battery_status TEXT NOT NULL,
     battery_percent INTEGER,
     charging_state TEXT,
+    location_status TEXT NOT NULL DEFAULT 'DISABLED',
+    latitude REAL,
+    longitude REAL,
+    accuracy_meters REAL,
+    location_observed_at INTEGER,
+    location_source TEXT,
     reported_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
@@ -551,6 +564,11 @@ func (s *Store) initialize(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
+	for name, definition := range map[string]string{"location_status": "TEXT NOT NULL DEFAULT 'DISABLED'", "latitude": "REAL", "longitude": "REAL", "accuracy_meters": "REAL", "location_observed_at": "INTEGER", "location_source": "TEXT"} {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE status_snapshots ADD COLUMN "+name+" "+definition); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate status snapshots: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -683,6 +701,24 @@ func (s *Store) PendingCaptureRequests(ctx context.Context, deviceID string) ([]
 	return result, rows.Err()
 }
 
+func (s *Store) CaptureRequestForRequester(ctx context.Context, deviceID, requestID string) (CaptureRequest, error) {
+	var v CaptureRequest
+	var created, expires int64
+	var image, failure sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,pair_id,requester_device_id,target_device_id,status,image_id,failure,created_at,expires_at FROM capture_requests WHERE id=? AND requester_device_id=?`, requestID, deviceID).Scan(&v.ID, &v.PairID, &v.RequesterDeviceID, &v.TargetDeviceID, &v.Status, &image, &failure, &created, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CaptureRequest{}, ErrCaptureRequestNotFound
+	}
+	if err != nil {
+		return CaptureRequest{}, err
+	}
+	v.ImageID = image.String
+	v.Failure = failure.String
+	v.CreatedAt = time.Unix(created, 0).UTC()
+	v.ExpiresAt = time.Unix(expires, 0).UTC()
+	return v, nil
+}
+
 func (s *Store) CreateStatusRequest(ctx context.Context, requesterDeviceID string) (StatusRequest, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -744,11 +780,16 @@ func (s *Store) PendingStatusRequests(ctx context.Context, deviceID string) ([]S
 	return result, rows.Err()
 }
 
-func (s *Store) CompleteStatusRequest(ctx context.Context, targetID, requestID string, battery BatteryReport) (StatusRequest, error) {
+func (s *Store) CompleteStatusRequest(ctx context.Context, targetID, requestID string, battery BatteryReport, location LocationReport) (StatusRequest, error) {
 	validCharging := battery.ChargingState == "CHARGING" || battery.ChargingState == "DISCHARGING" || battery.ChargingState == "FULL" || battery.ChargingState == "NOT_CHARGING" || battery.ChargingState == "UNKNOWN"
 	validAvailable := battery.Status == "AVAILABLE" && battery.Percent >= 0 && battery.Percent <= 100 && validCharging
 	validDisabled := battery.Status == "DISABLED" && battery.Percent == 0 && battery.ChargingState == ""
 	if !validAvailable && !validDisabled {
+		return StatusRequest{}, ErrStatusRequestNotFound
+	}
+	validLocationStatus := location.Status == "DISABLED" || location.Status == "PERMISSION_DENIED" || location.Status == "SETTING_OFF" || location.Status == "UNAVAILABLE" || location.Status == "TIMEOUT"
+	validLocation := location.Status == "AVAILABLE" && location.Latitude >= -90 && location.Latitude <= 90 && location.Longitude >= -180 && location.Longitude <= 180 && location.AccuracyMeters >= 0 && location.AccuracyMeters <= 100000 && (location.Source == "FRESH" || location.Source == "LAST_KNOWN") && !location.ObservedAt.IsZero() && !location.ObservedAt.After(s.now().UTC().Add(time.Minute))
+	if !validLocation && !validLocationStatus {
 		return StatusRequest{}, ErrStatusRequestNotFound
 	}
 	now := s.now().UTC()
@@ -774,7 +815,15 @@ func (s *Store) CompleteStatusRequest(ctx context.Context, targetID, requestID s
 		percent = battery.Percent
 		charging = battery.ChargingState
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO status_snapshots(device_id,pair_id,battery_status,battery_percent,charging_state,reported_at,expires_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET battery_status=excluded.battery_status,battery_percent=excluded.battery_percent,charging_state=excluded.charging_state,reported_at=excluded.reported_at,expires_at=excluded.expires_at`, targetID, v.PairID, battery.Status, percent, charging, now.Unix(), now.Add(time.Hour).Unix()); err != nil {
+	lat, lon, accuracy, observed, source := any(nil), any(nil), any(nil), any(nil), any(nil)
+	if location.Status == "AVAILABLE" {
+		lat = location.Latitude
+		lon = location.Longitude
+		accuracy = location.AccuracyMeters
+		observed = location.ObservedAt.UTC().Unix()
+		source = location.Source
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO status_snapshots(device_id,pair_id,battery_status,battery_percent,charging_state,location_status,latitude,longitude,accuracy_meters,location_observed_at,location_source,reported_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET battery_status=excluded.battery_status,battery_percent=excluded.battery_percent,charging_state=excluded.charging_state,location_status=excluded.location_status,latitude=excluded.latitude,longitude=excluded.longitude,accuracy_meters=excluded.accuracy_meters,location_observed_at=excluded.location_observed_at,location_source=excluded.location_source,reported_at=excluded.reported_at,expires_at=excluded.expires_at`, targetID, v.PairID, battery.Status, percent, charging, location.Status, lat, lon, accuracy, observed, source, now.Unix(), now.Add(time.Hour).Unix()); err != nil {
 		return StatusRequest{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) VALUES(?,?,'status.completed',?)`, v.PairID, targetID, now.Unix()); err != nil {
@@ -793,8 +842,11 @@ func (s *Store) PartnerStatusSnapshot(ctx context.Context, requesterID string) (
 	var v StatusSnapshot
 	var percent sql.NullInt64
 	var charging sql.NullString
+	var latitude, longitude, accuracy sql.NullFloat64
+	var observed sql.NullInt64
+	var source sql.NullString
 	var reported, expires int64
-	err := s.db.QueryRowContext(ctx, `SELECT s.device_id,s.battery_status,s.battery_percent,s.charging_state,s.reported_at,s.expires_at FROM devices a JOIN devices b ON b.pair_id=a.pair_id AND b.id<>a.id JOIN status_snapshots s ON s.device_id=b.id WHERE a.id=? AND s.expires_at>?`, requesterID, s.now().UTC().Unix()).Scan(&v.DeviceID, &v.Battery.Status, &percent, &charging, &reported, &expires)
+	err := s.db.QueryRowContext(ctx, `SELECT s.device_id,s.battery_status,s.battery_percent,s.charging_state,s.location_status,s.latitude,s.longitude,s.accuracy_meters,s.location_observed_at,s.location_source,s.reported_at,s.expires_at FROM devices a JOIN devices b ON b.pair_id=a.pair_id AND b.id<>a.id JOIN status_snapshots s ON s.device_id=b.id WHERE a.id=? AND s.expires_at>?`, requesterID, s.now().UTC().Unix()).Scan(&v.DeviceID, &v.Battery.Status, &percent, &charging, &v.Location.Status, &latitude, &longitude, &accuracy, &observed, &source, &reported, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StatusSnapshot{}, ErrStatusSnapshotNotFound
 	}
@@ -805,13 +857,34 @@ func (s *Store) PartnerStatusSnapshot(ctx context.Context, requesterID string) (
 		v.Battery.Percent = int(percent.Int64)
 	}
 	v.Battery.ChargingState = charging.String
+	if latitude.Valid {
+		v.Location.Latitude = latitude.Float64
+	}
+	if longitude.Valid {
+		v.Location.Longitude = longitude.Float64
+	}
+	if accuracy.Valid {
+		v.Location.AccuracyMeters = accuracy.Float64
+	}
+	if observed.Valid {
+		v.Location.ObservedAt = time.Unix(observed.Int64, 0).UTC()
+	}
+	v.Location.Source = source.String
 	v.ReportedAt = time.Unix(reported, 0).UTC()
 	v.ExpiresAt = time.Unix(expires, 0).UTC()
 	return v, nil
 }
 
-func (s *Store) ClearStatusSnapshot(ctx context.Context, deviceID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM status_snapshots WHERE device_id=?`, deviceID)
+func (s *Store) ClearStatusField(ctx context.Context, deviceID, field string) error {
+	var query string
+	if field == "battery" {
+		query = `UPDATE status_snapshots SET battery_status='DISABLED',battery_percent=NULL,charging_state=NULL WHERE device_id=?`
+	} else if field == "location" {
+		query = `UPDATE status_snapshots SET location_status='DISABLED',latitude=NULL,longitude=NULL,accuracy_meters=NULL,location_observed_at=NULL,location_source=NULL WHERE device_id=?`
+	} else {
+		return errors.New("invalid status field")
+	}
+	_, err := s.db.ExecContext(ctx, query, deviceID)
 	return err
 }
 

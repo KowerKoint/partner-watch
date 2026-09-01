@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.content.Intent
 import android.provider.Settings
+import android.net.Uri
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +34,7 @@ class MainActivity : ComponentActivity() {
         val notificationPermission = registerForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) { }
+        val locationPermission=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){ }
         setContent {
             PartnerWatchTheme {
                 val viewModel: EnrollmentViewModel = viewModel()
@@ -72,6 +74,10 @@ class MainActivity : ComponentActivity() {
                     onConnectionModeChanged = viewModel::setConnectionMode,
                     onBatterySharingChanged = viewModel::setBatterySharing,
                     onRequestPartnerStatus = viewModel::requestPartnerStatus,
+                    onLocationSharingChanged={enabled->viewModel.setLocationSharing(enabled);if(enabled)locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION))},
+                    onPreciseLocationChanged={precise->viewModel.setPreciseLocation(precise);if(precise)locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION))},
+                    onOpenLocationSettings={startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName")))},
+                    onOpenMap={latitude,longitude->runCatching{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude")))}},
                 )
             }
         }

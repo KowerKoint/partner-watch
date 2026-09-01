@@ -11,6 +11,7 @@ import java.io.IOException
 import java.time.Instant
 
 data class CreatedCaptureRequest(val requestId: String, val expiresAt: Instant)
+data class CaptureRequestStatus(val requestId:String,val status:String,val imageId:String,val failure:String,val expiresAt:Instant)
 
 sealed class CaptureRequestException(message: String) : IOException(message) {
     class RateLimited : CaptureRequestException("撮影要求の回数制限に達しました")
@@ -38,6 +39,12 @@ class CaptureApi(private val client: OkHttpClient = OkHttpClient()) {
         CreatedCaptureRequest(json.getString("requestId"), Instant.parse(json.getString("expiresAt")))
             .also { require(it.requestId.isNotBlank()) }
     } catch (_: Exception) { throw CaptureRequestException.Rejected() }
+
+    suspend fun status(session:DeviceSession,requestId:String):CaptureRequestStatus=withContext(Dispatchers.IO){
+        val url=session.serverUrl.resolve("v1/capture-requests/$requestId")?:throw IOException("状態URLを作成できません")
+        val request=Request.Builder().url(url).header("Authorization","Bearer ${session.credential}").get().build()
+        client.newCall(request).execute().use{if(it.code!=200)throw IOException("撮影状態を取得できません");val j=JSONObject(it.body.string());CaptureRequestStatus(j.getString("requestId"),j.getString("status"),j.optString("imageId"),j.optString("failure"),Instant.parse(j.getString("expiresAt")))}
+    }
 
     suspend fun reportReady(session: DeviceSession, requestId: String, imageId: String) =
         report(session, requestId, "READY", imageId, "")

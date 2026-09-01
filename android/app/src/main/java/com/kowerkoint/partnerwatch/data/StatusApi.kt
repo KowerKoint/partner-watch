@@ -9,9 +9,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.time.Instant
+import com.kowerkoint.partnerwatch.status.LocationResult
 
 data class CreatedStatusRequest(val requestId: String, val expiresAt: Instant)
-data class PartnerBatteryStatus(val status: String, val percent: Int?, val chargingState: String?, val reportedAt: Instant)
+data class PartnerBatteryStatus(val status: String, val percent: Int?, val chargingState: String?, val reportedAt: Instant,val location:PartnerLocationStatus)
+data class PartnerLocationStatus(val status:String,val latitude:Double?=null,val longitude:Double?=null,val accuracyMeters:Double?=null,val observedAt:Instant?=null,val source:String?=null)
 
 class StatusApi(private val client: OkHttpClient = OkHttpClient()) {
     suspend fun create(session: DeviceSession): CreatedStatusRequest = withContext(Dispatchers.IO) {
@@ -21,14 +23,15 @@ class StatusApi(private val client: OkHttpClient = OkHttpClient()) {
     suspend fun pending(session: DeviceSession): List<CreatedStatusRequest> = withContext(Dispatchers.IO) {
         execute(session,"v1/status-requests/pending",Request.Builder().get()).use { r->if(r.code!=200)throw IOException("保留要求を取得できません");val a=JSONObject(r.body.string()).getJSONArray("requests");(0 until a.length()).map{val j=a.getJSONObject(it);CreatedStatusRequest(j.getString("requestId"),Instant.parse(j.getString("expiresAt")))}}
     }
-    suspend fun reportBattery(session: DeviceSession, requestId: String, enabled: Boolean, percent: Int, charging: String) = withContext(Dispatchers.IO) {
+    suspend fun reportStatus(session: DeviceSession, requestId: String, enabled: Boolean, percent: Int, charging: String,location:LocationResult) = withContext(Dispatchers.IO) {
         val battery=JSONObject().put("status",if(enabled)"AVAILABLE" else "DISABLED").put("percent",if(enabled)percent else 0).put("chargingState",if(enabled)charging else "")
-        execute(session,"v1/status-requests/$requestId/result",Request.Builder().post(JSONObject().put("battery",battery).toString().toRequestBody(JSON))).use{if(it.code!=204)throw IOException("状態を報告できませんでした")}
+        val locationJson=JSONObject().put("status",location.status).put("latitude",location.latitude).put("longitude",location.longitude).put("accuracyMeters",location.accuracyMeters).put("observedAt",(location.observedAt?:Instant.EPOCH).toString()).put("source",location.source)
+        execute(session,"v1/status-requests/$requestId/result",Request.Builder().post(JSONObject().put("battery",battery).put("location",locationJson).toString().toRequestBody(JSON))).use{if(it.code!=204)throw IOException("状態を報告できませんでした")}
     }
     suspend fun partner(session: DeviceSession): PartnerBatteryStatus? = withContext(Dispatchers.IO) {
-        execute(session,"v1/partner-status",Request.Builder().get()).use{if(it.code==404)return@withContext null;if(it.code!=200)throw IOException("相手の状態を取得できません");val j=JSONObject(it.body.string());val b=j.getJSONObject("battery");PartnerBatteryStatus(b.getString("status"),if(b.getString("status")=="AVAILABLE")b.getInt("percent")else null,b.optString("chargingState").ifBlank{null},Instant.parse(j.getString("reportedAt")))}
+        execute(session,"v1/partner-status",Request.Builder().get()).use{if(it.code==404)return@withContext null;if(it.code!=200)throw IOException("相手の状態を取得できません");val j=JSONObject(it.body.string());val b=j.getJSONObject("battery");val l=j.getJSONObject("location");val available=l.getString("status")=="AVAILABLE";PartnerBatteryStatus(b.getString("status"),if(b.getString("status")=="AVAILABLE")b.getInt("percent")else null,b.optString("chargingState").ifBlank{null},Instant.parse(j.getString("reportedAt")),PartnerLocationStatus(l.getString("status"),if(available)l.getDouble("latitude")else null,if(available)l.getDouble("longitude")else null,if(available)l.getDouble("accuracyMeters")else null,if(available)Instant.parse(l.getString("observedAt"))else null,l.optString("source").ifBlank{null}))}
     }
-    suspend fun clearOwnStatus(session: DeviceSession) = withContext(Dispatchers.IO) { execute(session,"v1/device-status",Request.Builder().delete()).use { if(it.code!=204)throw IOException("共有済み状態を削除できませんでした") } }
+    suspend fun clearOwnStatus(session: DeviceSession,field:String) = withContext(Dispatchers.IO) { execute(session,"v1/device-status/$field",Request.Builder().delete()).use { if(it.code!=204)throw IOException("共有済み状態を削除できませんでした") } }
     private fun execute(session:DeviceSession,path:String,builder:Request.Builder)=client.newCall(builder.url(session.serverUrl.resolve(path)?:throw IOException("URLが不正です")).header("Authorization","Bearer ${session.credential}").build()).execute()
     private companion object { val JSON="application/json; charset=utf-8".toMediaType() }
 }

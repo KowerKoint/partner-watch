@@ -1,17 +1,20 @@
 package com.kowerkoint.partnerwatch.connection
 
 import android.app.NotificationChannel
+import android.Manifest
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.IBinder
 import android.os.BatteryManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.kowerkoint.partnerwatch.MainActivity
 import com.kowerkoint.partnerwatch.R
 import com.kowerkoint.partnerwatch.capture.CaptureFailure
@@ -30,6 +33,7 @@ import com.kowerkoint.partnerwatch.data.ImageRepository
 import com.kowerkoint.partnerwatch.data.PendingCaptureApi
 import com.kowerkoint.partnerwatch.data.StatusApi
 import com.kowerkoint.partnerwatch.status.StatusPreferences
+import com.kowerkoint.partnerwatch.status.LocationCollector
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +95,7 @@ class PartnerConnectionService : Service() {
     private val pendingCaptureApi = PendingCaptureApi(client)
     private val statusApi = StatusApi(client)
     private lateinit var statusPreferences: StatusPreferences
+    private lateinit var locationCollector: LocationCollector
     private var connectionJob: Job? = null
     private var oneShotWakeup = false
 
@@ -100,6 +105,7 @@ class PartnerConnectionService : Service() {
         val store = EnrollmentStore(applicationContext)
         sessions = DeviceSessionRepository(store, security)
         statusPreferences = StatusPreferences(applicationContext)
+        locationCollector = LocationCollector(applicationContext)
         uploader = CaptureUploader(
             applicationContext, CapturePreferences(applicationContext), JpegEncoder(),
             ImageRepository(ImageApi(client), sessions),
@@ -203,6 +209,8 @@ class PartnerConnectionService : Service() {
 
     private suspend fun processStatus(session: DeviceSession, requestId: String) {
         val enabled = statusPreferences.isSharingBattery()
+        val sharingLocation=statusPreferences.isSharingLocation()
+        val precise=statusPreferences.isPreciseLocation()
         val manager = getSystemService(BatteryManager::class.java)
         val percent = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
         val charging = when (manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)) {
@@ -212,8 +220,13 @@ class PartnerConnectionService : Service() {
             BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "NOT_CHARGING"
             else -> "UNKNOWN"
         }
-        runCatching { statusApi.reportBattery(session, requestId, enabled, percent, charging) }
-            .onSuccess { showStatusSharedNotification(enabled, percent) }
+        if(sharingLocation&&ContextCompat.checkSelfPermission(this,Manifest.permission.ACCESS_BACKGROUND_LOCATION)==PackageManager.PERMISSION_GRANTED){
+            ServiceCompat.startForeground(this,NOTIFICATION_ID,buildLocationNotification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        }
+        val location=locationCollector.collect(sharingLocation,precise)
+        runCatching { statusApi.reportStatus(session, requestId, enabled, percent, charging,location) }
+            .onSuccess { showStatusSharedNotification(enabled, percent,location.status) }
+        ServiceCompat.startForeground(this,NOTIFICATION_ID,buildNotification(ConnectionStatus.CONNECTED),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
     }
 
     private suspend fun processCapture(session: DeviceSession, requestId: String) {
@@ -252,8 +265,9 @@ class PartnerConnectionService : Service() {
         notificationManager.createNotificationChannel(NotificationChannel(STATUS_CHANNEL_ID, "状態共有", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
-    private fun showStatusSharedNotification(enabled:Boolean,percent:Int) {
-        val text=if(enabled)"バッテリー残量（$percent%）を共有しました" else "バッテリーは共有しませんでした"
+    private fun showStatusSharedNotification(enabled:Boolean,percent:Int,locationStatus:String) {
+        val shared=buildList{if(enabled)add("バッテリー残量（$percent%）");if(locationStatus=="AVAILABLE")add("現在地")}
+        val text=if(shared.isEmpty())"共有設定により情報を共有しませんでした" else shared.joinToString("と")+"を共有しました"
         notificationManager.notify(STATUS_NOTIFICATION_ID,NotificationCompat.Builder(this,STATUS_CHANNEL_ID).setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("相手から状態の更新要求がありました").setContentText(text).setAutoCancel(true).setContentIntent(pendingIntent).build())
     }
 
@@ -292,6 +306,8 @@ class PartnerConnectionService : Service() {
             ConnectionStatus.RECONNECTING -> "サーバー再接続中"
         })
         .setOngoing(true).setContentIntent(pendingIntent).build()
+
+    private fun buildLocationNotification()=NotificationCompat.Builder(this,CHANNEL_ID).setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("Partner Watch").setContentText("相手からの要求で現在地を取得しています").setOngoing(true).setContentIntent(pendingIntent).build()
 
     companion object {
         const val ACTION_FCM_WAKEUP = "com.kowerkoint.partnerwatch.action.FCM_WAKEUP"

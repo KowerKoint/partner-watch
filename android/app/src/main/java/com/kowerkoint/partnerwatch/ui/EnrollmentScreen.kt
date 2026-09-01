@@ -54,6 +54,10 @@ fun EnrollmentScreen(
     onConnectionModeChanged: (ConnectionMode) -> Unit,
     onBatterySharingChanged: (Boolean) -> Unit,
     onRequestPartnerStatus: () -> Unit,
+    onLocationSharingChanged:(Boolean)->Unit,
+    onPreciseLocationChanged:(Boolean)->Unit,
+    onOpenLocationSettings:()->Unit,
+    onOpenMap:(Double,Double)->Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -79,6 +83,10 @@ fun EnrollmentScreen(
                 onConnectionModeChanged = onConnectionModeChanged,
                 onBatterySharingChanged = onBatterySharingChanged,
                 onRequestPartnerStatus = onRequestPartnerStatus,
+                onLocationSharingChanged=onLocationSharingChanged,
+                onPreciseLocationChanged=onPreciseLocationChanged,
+                onOpenLocationSettings=onOpenLocationSettings,
+                onOpenMap=onOpenMap,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -173,6 +181,10 @@ private fun RegisteredContent(
     onConnectionModeChanged: (ConnectionMode) -> Unit,
     onBatterySharingChanged: (Boolean) -> Unit,
     onRequestPartnerStatus: () -> Unit,
+    onLocationSharingChanged:(Boolean)->Unit,
+    onPreciseLocationChanged:(Boolean)->Unit,
+    onOpenLocationSettings:()->Unit,
+    onOpenMap:(Double,Double)->Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -246,11 +258,27 @@ private fun RegisteredContent(
                 Text("取得日時: ${battery.value.reportedAt}", style=MaterialTheme.typography.bodySmall)
             } else Text("相手はバッテリー共有を無効にしています。")
         }
+        val partnerLocation=(state.partnerBattery as? BatteryUiState.Available)?.value?.location
+        Text("相手の現在地",style=MaterialTheme.typography.titleMedium)
+        when(partnerLocation?.status){
+            "AVAILABLE"->{Text("精度: 約${partnerLocation.accuracyMeters?.toInt()} m・取得日時: ${partnerLocation.observedAt}",style=MaterialTheme.typography.bodySmall);Button(onClick={onOpenMap(partnerLocation.latitude!!,partnerLocation.longitude!!)},modifier=Modifier.fillMaxWidth()){Text("地図アプリで開く")}}
+            "DISABLED"->Text("相手は現在地共有を無効にしています。")
+            "PERMISSION_DENIED"->Text("相手端末で位置情報の権限が許可されていません。")
+            "SETTING_OFF"->Text("相手端末の位置情報設定がOFFです。")
+            "TIMEOUT","UNAVAILABLE"->Text("相手の現在地を取得できませんでした。")
+            else->Text("現在地はまだ共有されていません。")
+        }
         HorizontalDivider()
         Text("現在地とバッテリーの共有", style = MaterialTheme.typography.titleLarge)
         Row(modifier=Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
             Column(modifier=Modifier.weight(1f)) { Text("バッテリーを共有",style=MaterialTheme.typography.titleMedium);Text("要求された時だけ残量と充電状態を共有します",style=MaterialTheme.typography.bodySmall) }
             Switch(checked=state.sharingBattery,onCheckedChange=onBatterySharingChanged)
+        }
+        Row(modifier=Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column(modifier=Modifier.weight(1f)){Text("現在地を共有",style=MaterialTheme.typography.titleMedium);Text("要求された時だけ位置を取得します",style=MaterialTheme.typography.bodySmall)};Switch(checked=state.sharingLocation,onCheckedChange=onLocationSharingChanged)}
+        if(state.sharingLocation){
+            Row(modifier=Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column(modifier=Modifier.weight(1f)){Text("正確な位置",style=MaterialTheme.typography.titleMedium);Text(if(state.preciseLocation)"GPSを含む正確な位置を共有します" else "おおよその位置を共有します",style=MaterialTheme.typography.bodySmall)};Switch(checked=state.preciseLocation,onCheckedChange=onPreciseLocationChanged)}
+            Text("アプリを閉じている時も応答するには、Androidの権限画面で位置情報を「常に許可」にしてください。",style=MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick=onOpenLocationSettings,modifier=Modifier.fillMaxWidth()){Text("位置情報の権限設定を開く")}
         }
         HorizontalDivider()
         Text("画面撮影", style = MaterialTheme.typography.titleLarge)
@@ -329,6 +357,10 @@ private fun EnrollmentFormPreview() {
             onConnectionModeChanged = {},
             onBatterySharingChanged = {},
             onRequestPartnerStatus = {},
+            onLocationSharingChanged={},
+            onPreciseLocationChanged={},
+            onOpenLocationSettings={},
+            onOpenMap={_,_->},
         )
     }
 }

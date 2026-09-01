@@ -57,6 +57,8 @@ sealed interface EnrollmentUiState {
         val connectionMode: ConnectionMode = ConnectionMode.ALWAYS_CONNECTED,
         val capture: CaptureUiState = CaptureUiState.Idle,
         val sharingBattery: Boolean = false,
+        val sharingLocation:Boolean=false,
+        val preciseLocation:Boolean=false,
         val partnerBattery: BatteryUiState = BatteryUiState.Idle,
     ) : EnrollmentUiState
 }
@@ -147,7 +149,9 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { capturePreferences.setAccepting(value) }
     }
 
-    fun setBatterySharing(value:Boolean) { viewModelScope.launch { statusPreferences.setSharingBattery(value); if(!value)runCatching{statusApi.clearOwnStatus(sessions.load())} } }
+    fun setBatterySharing(value:Boolean) { viewModelScope.launch { statusPreferences.setSharingBattery(value); if(!value)runCatching{statusApi.clearOwnStatus(sessions.load(),"battery")} } }
+    fun setLocationSharing(value:Boolean){viewModelScope.launch{statusPreferences.setSharingLocation(value);if(!value)runCatching{statusApi.clearOwnStatus(sessions.load(),"location")}}}
+    fun setPreciseLocation(value:Boolean){viewModelScope.launch{statusPreferences.setPreciseLocation(value)}}
     fun requestPartnerStatus() { viewModelScope.launch {
         batteryState.value=BatteryUiState.Loading
         try {
@@ -176,8 +180,14 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 timeoutJob?.cancel()
                 timeoutJob = viewModelScope.launch {
-                    val waitMillis = (created.expiresAt.toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0)
-                    delay(waitMillis + 1_000)
+                    val session=sessions.load()
+                    while (System.currentTimeMillis() <= created.expiresAt.toEpochMilli()+1_000 && (captureState.value as? CaptureUiState.Waiting)?.requestId==created.requestId) {
+                        delay(1_000)
+                        val result=runCatching{captureApi.status(session,created.requestId)}.getOrNull()?:continue
+                        if(result.status!="PENDING"){
+                            timeoutJob=null;applyCompletedEvent(CaptureCompletedEvent(result.requestId,result.status,result.imageId,result.failure));return@launch
+                        }
+                    }
                     if ((captureState.value as? CaptureUiState.Waiting)?.requestId == created.requestId) {
                         captureState.value = CaptureUiState.Error("撮影要求がタイムアウトしました")
                     }
@@ -208,6 +218,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             capturePreferences.setAccepting(false)
             statusPreferences.setSharingBattery(false)
+            statusPreferences.setSharingLocation(false)
             store.clear()
             getApplication<Application>().stopService(android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java))
             mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
@@ -229,9 +240,9 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         runCatching { refreshPartnerBattery() }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
-            val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery) { accepting, battery -> accepting to battery }
+            val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery,statusPreferences.sharingLocation,statusPreferences.preciseLocation) { accepting, battery,location,precise -> listOf(accepting,battery,location,precise) }
             combine(localSettings, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, combine(captureState,batteryState){capture,battery->capture to battery}) { settings, connected, connection, mode, remote ->
-                EnrollmentUiState.Registered(enrollment, settings.first, connected, connection, mode, remote.first, settings.second, remote.second)
+                EnrollmentUiState.Registered(enrollment, settings[0], connected, connection, mode, remote.first, settings[1],settings[2],settings[3], remote.second)
             }.collect { mutableState.value = it }
         }
         registeredObservationJob?.join()
