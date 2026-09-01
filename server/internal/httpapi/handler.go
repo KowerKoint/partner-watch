@@ -36,6 +36,13 @@ type Authenticator interface {
 	AuthenticateDevice(ctx context.Context, credential string) (string, error)
 }
 
+type FCMTokenStore interface {
+	SetFCMToken(context.Context, string, string) error
+}
+type WakeupSender interface {
+	SendWakeup(context.Context, string, string) error
+}
+
 type ImageStore interface {
 	SaveImage(ctx context.Context, deviceID string, data []byte, width, height int) (store.Image, error)
 	TakeImage(ctx context.Context, deviceID, imageID string) (store.Image, error)
@@ -76,6 +83,9 @@ type captureRequestResponse struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
+type fcmTokenRequest struct {
+	Token string `json:"token"`
+}
 type captureResultRequest struct {
 	Status  string `json:"status"`
 	ImageID string `json:"imageId"`
@@ -85,11 +95,11 @@ type captureResultRequest struct {
 const maxImageBytes = 10 * 1024 * 1024
 const maxImagePixels = 5_000_000
 
-func NewHandler(enroller Enroller) http.Handler {
-	return newHandler(enroller, newEventHub())
+func NewHandler(enroller Enroller, sender ...WakeupSender) http.Handler {
+	return newHandler(enroller, newEventHub(), sender...)
 }
 
-func newHandler(enroller Enroller, events *eventHub) http.Handler {
+func newHandler(enroller Enroller, events *eventHub, sender ...WakeupSender) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("POST /v1/enrollments", handleEnrollment(enroller))
@@ -100,8 +110,11 @@ func newHandler(enroller Enroller, events *eventHub) http.Handler {
 	}
 	if captures, ok := enroller.(CaptureStore); ok && authenticated {
 		mux.HandleFunc("GET /v1/events", handleEvents(authenticator, events))
-		mux.HandleFunc("POST /v1/capture-requests", authenticate(authenticator, handleCaptureRequest(captures, events)))
+		mux.HandleFunc("POST /v1/capture-requests", authenticate(authenticator, handleCaptureRequest(captures, events, sender...)))
 		mux.HandleFunc("POST /v1/capture-requests/{requestID}/result", authenticate(authenticator, handleCaptureResult(captures, events)))
+	}
+	if tokens, ok := enroller.(FCMTokenStore); ok && authenticated {
+		mux.HandleFunc("POST /v1/device/fcm-token", authenticate(authenticator, handleFCMToken(tokens)))
 	}
 	return securityHeaders(mux)
 }
@@ -170,7 +183,7 @@ func handleEvents(authenticator Authenticator, events *eventHub) http.HandlerFun
 	}
 }
 
-func handleCaptureRequest(captures CaptureStore, events *eventHub) authenticatedHandler {
+func handleCaptureRequest(captures CaptureStore, events *eventHub, sender ...WakeupSender) authenticatedHandler {
 	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
 		capture, err := captures.CreateCaptureRequest(request.Context(), deviceID)
 		if errors.Is(err, store.ErrPartnerNotFound) {
@@ -188,9 +201,32 @@ func handleCaptureRequest(captures CaptureStore, events *eventHub) authenticated
 		events.publish(capture.TargetDeviceID, deviceEvent{
 			Type: "capture.requested", RequestID: capture.ID, ExpiresAt: capture.ExpiresAt.Format(time.RFC3339),
 		})
+		if len(sender) > 0 && sender[0] != nil {
+			if err := sender[0].SendWakeup(request.Context(), capture.TargetDeviceID, capture.PairID); err != nil {
+				slog.Warn("FCM wakeup failed", "error", err)
+			}
+		}
 		writeJSON(response, http.StatusCreated, captureRequestResponse{
 			RequestID: capture.ID, Status: capture.Status, CreatedAt: capture.CreatedAt, ExpiresAt: capture.ExpiresAt,
 		})
+	}
+}
+
+func handleFCMToken(tokens FCMTokenStore) authenticatedHandler {
+	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
+		request.Body = http.MaxBytesReader(response, request.Body, 8*1024)
+		var body fcmTokenRequest
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil || strings.TrimSpace(body.Token) == "" || len(body.Token) > 4096 {
+			writeError(response, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := tokens.SetFCMToken(request.Context(), deviceID, strings.TrimSpace(body.Token)); err != nil {
+			writeError(response, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
 	}
 }
 

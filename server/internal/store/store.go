@@ -27,6 +27,10 @@ type Store struct {
 	now     func() time.Time
 }
 
+type WakeupSender interface {
+	SendWakeup(context.Context, string, string) error
+}
+
 type PairInvitations struct {
 	PairID      string
 	PairName    string
@@ -125,6 +129,12 @@ CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_a
 CREATE INDEX IF NOT EXISTS images_expires_at_idx ON images(expires_at);
 CREATE INDEX IF NOT EXISTS capture_requests_requester_created_idx ON capture_requests(requester_device_id, created_at);
 CREATE INDEX IF NOT EXISTS capture_requests_expires_at_idx ON capture_requests(expires_at);
+
+CREATE TABLE IF NOT EXISTS device_fcm_tokens (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 `
 
 func Open(dataDir string) (*Store, error) {
@@ -148,6 +158,17 @@ func Open(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *Store) SetFCMToken(ctx context.Context, deviceID, token string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO device_fcm_tokens(device_id, token, updated_at) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET token=excluded.token, updated_at=excluded.updated_at`, deviceID, token, s.now().UTC().Unix())
+	return err
+}
+
+func (s *Store) FCMToken(ctx context.Context, deviceID string) (string, error) {
+	var token string
+	err := s.db.QueryRowContext(ctx, `SELECT token FROM device_fcm_tokens WHERE device_id = ?`, deviceID).Scan(&token)
+	return token, err
 }
 
 func (s *Store) AuthenticateDevice(ctx context.Context, credential string) (string, error) {

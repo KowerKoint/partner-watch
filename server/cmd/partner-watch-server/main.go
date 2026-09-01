@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/kowerkoint/partner-watch/server/internal/fcm"
 	"github.com/kowerkoint/partner-watch/server/internal/httpapi"
 	"github.com/kowerkoint/partner-watch/server/internal/store"
 )
@@ -23,9 +24,23 @@ func main() {
 	defer func() { _ = database.Close() }()
 	go maintainData(database, logger)
 
+	var handler http.Handler
+	credentials := os.Getenv("PW_FIREBASE_CREDENTIALS_FILE")
+	if credentials != "" {
+		sender, initErr := fcm.New(context.Background(), credentials, database)
+		if initErr != nil {
+			logger.Error("failed to initialize FCM", "error", initErr)
+			os.Exit(1)
+		}
+		handler = httpapi.NewHandler(database, sender)
+	} else {
+		logger.Warn("FCM disabled: PW_FIREBASE_CREDENTIALS_FILE is not set")
+		handler = httpapi.NewHandler(database)
+	}
+
 	server := &http.Server{
 		Addr:              address,
-		Handler:           httpapi.NewHandler(database),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -7,10 +7,12 @@ services:
       PW_LISTEN_ADDR: 0.0.0.0:8080
       PW_DATA_DIR: /var/lib/partner-watch
       PW_PUBLIC_URL: ${PW_PUBLIC_URL:?PW_PUBLIC_URL must be set in deploy/.env}
+      PW_FIREBASE_CREDENTIALS_FILE: /run/secrets/firebase-service-account.json
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
       - partner-watch-data:/var/lib/partner-watch
+      - ${PW_FIREBASE_CREDENTIALS_FILE:?PW_FIREBASE_CREDENTIALS_FILE must be set in deploy/.env}:/run/secrets/firebase-service-account.json:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
