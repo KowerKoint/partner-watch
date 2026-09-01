@@ -245,7 +245,7 @@ private fun RegisteredContent(
             }
         }
         HorizontalDivider()
-        Text("相手のバッテリー", style = MaterialTheme.typography.titleLarge)
+        Text("相手の現在地とバッテリー", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onRequestPartnerStatus, enabled = state.partnerBattery !is BatteryUiState.Loading, modifier = Modifier.fillMaxWidth()) {
             Text(if (state.partnerBattery is BatteryUiState.Loading) "更新を待っています…" else "現在の情報を更新")
         }
