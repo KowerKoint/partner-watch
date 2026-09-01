@@ -35,6 +35,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 import com.kowerkoint.partnerwatch.BuildConfig
+import com.kowerkoint.partnerwatch.connection.ConnectionMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +51,7 @@ fun EnrollmentScreen(
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
     onDisconnectForTest: () -> Unit,
+    onConnectionModeChanged: (ConnectionMode) -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -72,6 +74,7 @@ fun EnrollmentScreen(
                 onSavePhoto = onSavePhoto,
                 onLogout = onLogout,
                 onDisconnectForTest = onDisconnectForTest,
+                onConnectionModeChanged = onConnectionModeChanged,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -163,6 +166,7 @@ private fun RegisteredContent(
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
     onDisconnectForTest: () -> Unit,
+    onConnectionModeChanged: (ConnectionMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -183,6 +187,12 @@ private fun RegisteredContent(
                 MaterialTheme.colorScheme.error
             },
         )
+        Text("撮影要求の待機方法", style = MaterialTheme.typography.titleLarge)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onConnectionModeChanged(ConnectionMode.ALWAYS_CONNECTED) }, enabled = state.connectionMode != ConnectionMode.ALWAYS_CONNECTED, modifier = Modifier.weight(1f)) { Text("常に待機") }
+            Button(onClick = { onConnectionModeChanged(ConnectionMode.FCM_ONLY) }, enabled = state.connectionMode != ConnectionMode.FCM_ONLY, modifier = Modifier.weight(1f)) { Text("省電力") }
+        }
+        Text(if (state.connectionMode == ConnectionMode.FCM_ONLY) "省電力: 通知を受けたときだけ一時的に接続します。撮影要求の到着が少し遅れる場合があります。" else "常に待機: すぐに撮影要求を受け取れますが、バッテリーを多く使います。", style = MaterialTheme.typography.bodySmall)
         HorizontalDivider()
         Text("相手の画面", style = MaterialTheme.typography.titleLarge)
         Button(
@@ -290,6 +300,7 @@ private fun EnrollmentFormPreview() {
             onSavePhoto = {},
             onLogout = {},
             onDisconnectForTest = {},
+            onConnectionModeChanged = {},
         )
     }
 }

@@ -16,6 +16,8 @@ import com.kowerkoint.partnerwatch.connection.CaptureCompletedEvent
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 import com.kowerkoint.partnerwatch.connection.ConnectionStatusBus
 import com.kowerkoint.partnerwatch.connection.FcmTokenRegistrar
+import com.kowerkoint.partnerwatch.connection.ConnectionMode
+import com.kowerkoint.partnerwatch.connection.ConnectionPreferences
 import com.kowerkoint.partnerwatch.data.CaptureApi
 import com.kowerkoint.partnerwatch.data.CaptureRequestException
 import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
@@ -48,6 +50,7 @@ sealed interface EnrollmentUiState {
         val acceptingCaptures: Boolean = false,
         val accessibilityConnected: Boolean = false,
         val connectionStatus: ConnectionStatus = ConnectionStatus.STARTING,
+        val connectionMode: ConnectionMode = ConnectionMode.ALWAYS_CONNECTED,
         val capture: CaptureUiState = CaptureUiState.Idle,
     ) : EnrollmentUiState
 }
@@ -66,6 +69,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         security = DeviceSecurity(),
     )
     private val capturePreferences = CapturePreferences(application.applicationContext)
+    private val connectionPreferences = ConnectionPreferences(application.applicationContext)
     private val security = DeviceSecurity()
     private val store = EnrollmentStore(application.applicationContext)
     private val sessions = DeviceSessionRepository(store, security)
@@ -186,12 +190,16 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
+    fun setConnectionMode(mode: ConnectionMode) {
+        viewModelScope.launch { connectionPreferences.setMode(mode) }
+    }
+
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
         runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
-            combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, captureState) { accepting, connected, connection, capture ->
-                EnrollmentUiState.Registered(enrollment, accepting, connected, connection, capture)
+            combine(capturePreferences.accepting, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, captureState) { accepting, connected, connection, mode, capture ->
+                EnrollmentUiState.Registered(enrollment, accepting, connected, connection, mode, capture)
             }.collect { mutableState.value = it }
         }
         registeredObservationJob?.join()

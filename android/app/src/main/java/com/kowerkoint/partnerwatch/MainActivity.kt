@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
 import com.kowerkoint.partnerwatch.connection.PartnerConnectionService
+import com.kowerkoint.partnerwatch.connection.ConnectionMode
 import com.kowerkoint.partnerwatch.ui.EnrollmentUiState
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -36,9 +37,9 @@ class MainActivity : ComponentActivity() {
             PartnerWatchTheme {
                 val viewModel: EnrollmentViewModel = viewModel()
                 val state = viewModel.state.collectAsStateWithLifecycle()
-                val isRegistered = state.value is EnrollmentUiState.Registered
-                LaunchedEffect(isRegistered) {
-                    if (isRegistered) {
+                val registered = state.value as? EnrollmentUiState.Registered
+                LaunchedEffect(registered?.connectionMode) {
+                    if (registered?.connectionMode == ConnectionMode.ALWAYS_CONNECTED) {
                         if (ContextCompat.checkSelfPermission(
                                 this@MainActivity,
                                 Manifest.permission.POST_NOTIFICATIONS,
@@ -66,6 +67,7 @@ class MainActivity : ComponentActivity() {
                     onSavePhoto = viewModel::saveReceivedPhoto,
                     onLogout = viewModel::logout,
                     onDisconnectForTest = viewModel::disconnectForTest,
+                    onConnectionModeChanged = viewModel::setConnectionMode,
                 )
             }
         }

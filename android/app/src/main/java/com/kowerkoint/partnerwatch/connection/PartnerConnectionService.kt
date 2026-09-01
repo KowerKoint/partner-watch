@@ -78,6 +78,7 @@ class PartnerConnectionService : Service() {
     private val captureApi = CaptureApi(client)
     private val pendingCaptureApi = PendingCaptureApi(client)
     private var connectionJob: Job? = null
+    private var oneShotWakeup = false
 
     override fun onCreate() {
         super.onCreate()
@@ -102,7 +103,10 @@ class PartnerConnectionService : Service() {
         connectionJob = scope.launch { connectionLoop() }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        oneShotWakeup = intent?.action == ACTION_FCM_WAKEUP
+        return START_NOT_STICKY
+    }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
 
@@ -133,6 +137,7 @@ class PartnerConnectionService : Service() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 updateConnectionStatus(ConnectionStatus.CONNECTED)
                 scope.launch { processPendingCaptures(session) }
+                if (oneShotWakeup) scope.launch { delay(5_000); stopSelf() }
             }
             override fun onMessage(webSocket: WebSocket, text: String) { handleEvent(session, text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -235,7 +240,8 @@ class PartnerConnectionService : Service() {
         })
         .setOngoing(true).setContentIntent(pendingIntent).build()
 
-    private companion object {
+    companion object {
+        const val ACTION_FCM_WAKEUP = "com.kowerkoint.partnerwatch.action.FCM_WAKEUP"
         const val TAG = "PartnerWatchConnection"
         const val CHANNEL_ID = "partner_connection"
         const val NOTIFICATION_ID = 1001

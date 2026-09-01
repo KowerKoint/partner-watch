@@ -32,7 +32,7 @@ class PartnerFirebaseMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         if (message.data["type"] != "capture.wakeup") return
         Log.i(TAG, "FCM wakeup received")
-        ContextCompat.startForegroundService(this, Intent(this, PartnerConnectionService::class.java))
+        ContextCompat.startForegroundService(this, Intent(this, PartnerConnectionService::class.java).setAction(PartnerConnectionService.ACTION_FCM_WAKEUP))
     }
 
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
