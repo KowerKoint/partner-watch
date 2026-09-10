@@ -247,6 +247,53 @@ paths:
       responses:
         "204":
           description: Snapshot deleted or did not exist.
+  /v1/forwarded-notifications:
+    post:
+      operationId: createForwardedNotification
+      description: Stores a user-visible notification for every device on the other side of the pair for at most one hour.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForwardedNotificationInput"
+      responses:
+        "201":
+          description: Notification accepted for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForwardedNotification"
+        "409":
+          description: No device is enrolled on the other side.
+        "429":
+          description: Limit of 20 notifications per 10 seconds or 500 per hour was exceeded.
+  /v1/forwarded-notifications/pending:
+    get:
+      operationId: listPendingForwardedNotifications
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Unexpired notifications not yet acknowledged by this device.
+  /v1/forwarded-notifications/{notificationId}/ack:
+    post:
+      operationId: acknowledgeForwardedNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Delivery acknowledged.
+        "404":
+          description: Notification is not pending for this device.
 components:
   securitySchemes:
     bearerAuth:
@@ -419,6 +466,40 @@ components:
         expiresAt:
           type: string
           format: date-time
+    ForwardedNotificationInput:
+      type: object
+      additionalProperties: false
+      required: [sourcePackage, sourceAppName, title, body, postedAt]
+      properties:
+        sourcePackage:
+          type: string
+          maxLength: 255
+        sourceAppName:
+          type: string
+          maxLength: 120
+        title:
+          type: string
+          maxLength: 500
+        body:
+          type: string
+          maxLength: 4000
+        postedAt:
+          type: string
+          format: date-time
+    ForwardedNotification:
+      allOf:
+        - $ref: "#/components/schemas/ForwardedNotificationInput"
+        - type: object
+          required: [id, createdAt, expiresAt]
+          properties:
+            id:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+            expiresAt:
+              type: string
+              format: date-time
     DeviceEvent:
       oneOf:
         - type: object

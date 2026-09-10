@@ -65,6 +65,11 @@ type StatusStore interface {
 	PartnerStatusSnapshot(context.Context, string) (store.StatusSnapshot, error)
 	ClearStatusField(context.Context, string, string) error
 }
+type ForwardedNotificationStore interface {
+	CreateForwardedNotification(context.Context, string, store.ForwardedNotification) (store.ForwardedNotification, []string, error)
+	PendingForwardedNotifications(context.Context, string) ([]store.ForwardedNotification, error)
+	AcknowledgeForwardedNotification(context.Context, string, string) error
+}
 
 type enrollmentRequest struct {
 	InvitationToken string `json:"invitationToken"`
@@ -131,6 +136,23 @@ type statusSnapshotResponse struct {
 	ReportedAt time.Time             `json:"reportedAt"`
 	ExpiresAt  time.Time             `json:"expiresAt"`
 }
+type forwardedNotificationRequest struct {
+	SourcePackage string    `json:"sourcePackage"`
+	SourceAppName string    `json:"sourceAppName"`
+	Title         string    `json:"title"`
+	Body          string    `json:"body"`
+	PostedAt      time.Time `json:"postedAt"`
+}
+type forwardedNotificationResponse struct {
+	ID            string    `json:"id"`
+	SourcePackage string    `json:"sourcePackage"`
+	SourceAppName string    `json:"sourceAppName"`
+	Title         string    `json:"title"`
+	Body          string    `json:"body"`
+	PostedAt      time.Time `json:"postedAt"`
+	CreatedAt     time.Time `json:"createdAt"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
 
 const maxImageBytes = 10 * 1024 * 1024
 const maxImagePixels = 5_000_000
@@ -170,7 +192,79 @@ func newHandler(enroller Enroller, events *eventHub, sender ...WakeupSender) htt
 		mux.HandleFunc("DELETE /v1/device-status/{field}", authenticate(authenticator, handleClearStatus(statuses)))
 		mux.HandleFunc("DELETE /v1/device-status", authenticate(authenticator, handleClearStatus(statuses)))
 	}
+	if notifications, ok := enroller.(ForwardedNotificationStore); ok && authenticated {
+		mux.HandleFunc("POST /v1/forwarded-notifications", authenticate(authenticator, handleForwardedNotification(notifications, events, sender...)))
+		mux.HandleFunc("GET /v1/forwarded-notifications/pending", authenticate(authenticator, handlePendingForwardedNotifications(notifications)))
+		mux.HandleFunc("POST /v1/forwarded-notifications/{notificationID}/ack", authenticate(authenticator, handleAcknowledgeForwardedNotification(notifications)))
+	}
 	return securityHeaders(mux)
+}
+
+func forwardedNotificationResponseFrom(v store.ForwardedNotification) forwardedNotificationResponse {
+	return forwardedNotificationResponse{v.ID, v.SourcePackage, v.SourceAppName, v.Title, v.Body, v.PostedAt, v.CreatedAt, v.ExpiresAt}
+}
+
+func handleForwardedNotification(notifications ForwardedNotificationStore, events *eventHub, sender ...WakeupSender) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		var body forwardedNotificationRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+		d.DisallowUnknownFields()
+		if d.Decode(&body) != nil || strings.TrimSpace(body.SourcePackage) == "" || utf8.RuneCountInString(body.SourcePackage) > 255 || strings.TrimSpace(body.SourceAppName) == "" || utf8.RuneCountInString(body.SourceAppName) > 120 || utf8.RuneCountInString(body.Title) > 500 || utf8.RuneCountInString(body.Body) > 4000 || (strings.TrimSpace(body.Title) == "" && strings.TrimSpace(body.Body) == "") || body.PostedAt.IsZero() {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		item, targets, err := notifications.CreateForwardedNotification(r.Context(), deviceID, store.ForwardedNotification{SourcePackage: strings.TrimSpace(body.SourcePackage), SourceAppName: strings.TrimSpace(body.SourceAppName), Title: strings.TrimSpace(body.Title), Body: strings.TrimSpace(body.Body), PostedAt: body.PostedAt})
+		if errors.Is(err, store.ErrPartnerNotFound) {
+			writeError(w, 409, "partner_unavailable")
+			return
+		}
+		if errors.Is(err, store.ErrRateLimited) {
+			writeError(w, 429, "rate_limited")
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		for _, target := range targets {
+			events.publish(target, deviceEvent{Type: "notification.forwarded", RequestID: item.ID, ExpiresAt: item.ExpiresAt.Format(time.RFC3339)})
+			if len(sender) > 0 && sender[0] != nil {
+				if err := sender[0].SendWakeup(r.Context(), target, item.PairID); err != nil {
+					slog.Warn("FCM notification wakeup failed", "error", err)
+				}
+			}
+		}
+		writeJSON(w, 201, forwardedNotificationResponseFrom(item))
+	}
+}
+
+func handlePendingForwardedNotifications(notifications ForwardedNotificationStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		items, err := notifications.PendingForwardedNotifications(r.Context(), deviceID)
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		out := struct {
+			Notifications []forwardedNotificationResponse `json:"notifications"`
+		}{Notifications: make([]forwardedNotificationResponse, 0, len(items))}
+		for _, item := range items {
+			out.Notifications = append(out.Notifications, forwardedNotificationResponseFrom(item))
+		}
+		writeJSON(w, 200, out)
+	}
+}
+
+func handleAcknowledgeForwardedNotification(notifications ForwardedNotificationStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		if err := notifications.AcknowledgeForwardedNotification(r.Context(), deviceID, r.PathValue("notificationID")); errors.Is(err, store.ErrForwardedNotificationNotFound) {
+			http.NotFound(w, r)
+		} else if err != nil {
+			writeError(w, 500, "internal_error")
+		} else {
+			w.WriteHeader(204)
+		}
+	}
 }
 
 func statusResponse(v store.StatusRequest) captureRequestResponse {

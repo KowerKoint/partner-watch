@@ -30,6 +30,8 @@ import com.kowerkoint.partnerwatch.data.DeviceSessionRepository
 import com.kowerkoint.partnerwatch.data.EnrollmentStore
 import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
+import com.kowerkoint.partnerwatch.data.ForwardedNotification
+import com.kowerkoint.partnerwatch.data.ForwardedNotificationApi
 import com.kowerkoint.partnerwatch.data.PendingCaptureApi
 import com.kowerkoint.partnerwatch.data.StatusApi
 import com.kowerkoint.partnerwatch.status.StatusPreferences
@@ -87,6 +89,7 @@ class PartnerConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient()
     private val captureMutex = Mutex()
+    private val forwardedNotificationMutex = Mutex()
     private lateinit var sessions: DeviceSessionRepository
     private lateinit var uploader: CaptureUploader
     private lateinit var notificationManager: NotificationManager
@@ -94,6 +97,7 @@ class PartnerConnectionService : Service() {
     private val captureApi = CaptureApi(client)
     private val pendingCaptureApi = PendingCaptureApi(client)
     private val statusApi = StatusApi(client)
+    private val forwardedNotificationApi = ForwardedNotificationApi(client)
     private lateinit var statusPreferences: StatusPreferences
     private lateinit var locationCollector: LocationCollector
     private var connectionJob: Job? = null
@@ -114,6 +118,7 @@ class PartnerConnectionService : Service() {
         createNotificationChannel()
         createCaptureNotificationChannel()
         createStatusNotificationChannel()
+        createForwardedNotificationChannel()
         pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -185,6 +190,11 @@ class PartnerConnectionService : Service() {
             if (event.expiresAt.isAfter(Instant.now())) scope.launch { processStatus(session, event.requestId) }
             return
         }
+        val notificationJson = runCatching { JSONObject(text) }.getOrNull()
+        if (notificationJson?.optString("type") == "notification.forwarded") {
+            scope.launch { processForwardedNotifications(session) }
+            return
+        }
         val event = parseCaptureRequestedEvent(text) ?: return
         if (!event.expiresAt.isAfter(Instant.now())) return
         scope.launch {
@@ -204,7 +214,17 @@ class PartnerConnectionService : Service() {
         runCatching { statusApi.pending(session) }.getOrDefault(emptyList()).forEach { event ->
             if (event.expiresAt.isAfter(Instant.now())) processStatus(session, event.requestId)
         }
+        processForwardedNotifications(session)
         if (oneShotWakeup) stopSelf()
+    }
+
+    private suspend fun processForwardedNotifications(session: DeviceSession) {
+        forwardedNotificationMutex.withLock {
+            runCatching { forwardedNotificationApi.pending(session) }.getOrDefault(emptyList()).forEach { item ->
+                showForwardedNotification(item)
+                runCatching { forwardedNotificationApi.acknowledge(session, item.id) }
+            }
+        }
     }
 
     private suspend fun processStatus(session: DeviceSession, requestId: String) {
@@ -265,6 +285,29 @@ class PartnerConnectionService : Service() {
         notificationManager.createNotificationChannel(NotificationChannel(STATUS_CHANNEL_ID, "状態共有", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
+    private fun createForwardedNotificationChannel() {
+        notificationManager.createNotificationChannel(
+            NotificationChannel(FORWARDED_NOTIFICATION_CHANNEL_ID, "相手から転送された通知", NotificationManager.IMPORTANCE_LOW).apply {
+                setSound(null, null)
+                enableVibration(false)
+            },
+        )
+    }
+
+    private fun showForwardedNotification(item: ForwardedNotification) {
+        val content = listOf(item.title, item.body).filter { it.isNotBlank() }.joinToString("\n")
+        val notification = NotificationCompat.Builder(this, FORWARDED_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(item.sourceAppName)
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setSilent(true)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        notificationManager.notify(item.id.hashCode(), notification)
+    }
+
     private fun showStatusSharedNotification(enabled:Boolean,percent:Int,locationStatus:String) {
         val shared=buildList{if(enabled)add("バッテリー残量（$percent%）");if(locationStatus=="AVAILABLE")add("現在地")}
         val text=if(shared.isEmpty())"共有設定により情報を共有しませんでした" else shared.joinToString("と")+"を共有しました"
@@ -302,7 +345,7 @@ class PartnerConnectionService : Service() {
         .setContentTitle("Partner Watch")
         .setContentText(when (status) {
             ConnectionStatus.STARTING -> "サーバーへ接続しています"
-            ConnectionStatus.CONNECTED -> "サーバー接続済み・撮影要求を待機しています"
+            ConnectionStatus.CONNECTED -> "サーバー接続済み・要求や通知を待機しています"
             ConnectionStatus.RECONNECTING -> "サーバー再接続中"
         })
         .setOngoing(true).setContentIntent(pendingIntent).build()
@@ -318,5 +361,6 @@ class PartnerConnectionService : Service() {
         const val CAPTURE_NOTIFICATION_ID = 1002
         const val STATUS_CHANNEL_ID = "status_shared"
         const val STATUS_NOTIFICATION_ID = 1003
+        const val FORWARDED_NOTIFICATION_CHANNEL_ID = "forwarded_notifications"
     }
 }

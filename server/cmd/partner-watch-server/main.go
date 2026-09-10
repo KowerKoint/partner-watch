@@ -78,9 +78,17 @@ func maintainData(database *store.Store, logger *slog.Logger) {
 			logger.Info("expired status requests", "count", count)
 		}
 	}
+	cleanupForwardedNotifications := func() {
+		if count, err := database.DeleteExpiredForwardedNotifications(context.Background()); err != nil {
+			logger.Error("failed to delete expired forwarded notifications", "error", err)
+		} else if count > 0 {
+			logger.Info("deleted expired forwarded notifications", "count", count)
+		}
+	}
 	cleanupImages()
 	expireCaptures()
 	expireStatuses()
+	cleanupForwardedNotifications()
 	imageTicker := time.NewTicker(10 * time.Minute)
 	captureTicker := time.NewTicker(5 * time.Second)
 	defer imageTicker.Stop()
@@ -89,6 +97,7 @@ func maintainData(database *store.Store, logger *slog.Logger) {
 		select {
 		case <-imageTicker.C:
 			cleanupImages()
+			cleanupForwardedNotifications()
 		case <-captureTicker.C:
 			expireCaptures()
 			expireStatuses()

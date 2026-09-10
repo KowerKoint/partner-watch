@@ -86,6 +86,42 @@ func TestExpiredImagesAreDeleted(t *testing.T) {
 	}
 }
 
+func TestForwardedNotificationDeliveryAndExpiry(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+
+	created, targets, err := s.CreateForwardedNotification(ctx, first.DeviceID, ForwardedNotification{
+		SourcePackage: "com.example.chat", SourceAppName: "Chat", Title: "hello", Body: "world", PostedAt: base.Add(-time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CreateForwardedNotification: %v", err)
+	}
+	if len(targets) != 1 || targets[0] != second.DeviceID || created.ExpiresAt != base.Add(time.Hour) {
+		t.Fatalf("created=%+v targets=%v", created, targets)
+	}
+	if items, err := s.PendingForwardedNotifications(ctx, first.DeviceID); err != nil || len(items) != 0 {
+		t.Fatalf("source pending=%v, %v", items, err)
+	}
+	items, err := s.PendingForwardedNotifications(ctx, second.DeviceID)
+	if err != nil || len(items) != 1 || items[0].Body != "world" {
+		t.Fatalf("target pending=%v, %v", items, err)
+	}
+	if err := s.AcknowledgeForwardedNotification(ctx, second.DeviceID, created.ID); err != nil {
+		t.Fatalf("AcknowledgeForwardedNotification: %v", err)
+	}
+	if err := s.AcknowledgeForwardedNotification(ctx, second.DeviceID, created.ID); !errors.Is(err, ErrForwardedNotificationNotFound) {
+		t.Fatalf("duplicate acknowledgement=%v", err)
+	}
+
+	s.now = func() time.Time { return base.Add(time.Hour + time.Second) }
+	if count, err := s.DeleteExpiredForwardedNotifications(ctx); err != nil || count != 1 {
+		t.Fatalf("DeleteExpiredForwardedNotifications=%d, %v", count, err)
+	}
+}
+
 func TestCaptureRequestRateLimitAndCompletion(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

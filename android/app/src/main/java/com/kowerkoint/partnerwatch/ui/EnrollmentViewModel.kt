@@ -1,6 +1,8 @@
 package com.kowerkoint.partnerwatch.ui
 
 import android.app.Application
+import android.app.NotificationManager
+import android.content.ComponentName
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -27,6 +29,8 @@ import com.kowerkoint.partnerwatch.data.PhotoCollection
 import com.kowerkoint.partnerwatch.data.StatusApi
 import com.kowerkoint.partnerwatch.data.PartnerBatteryStatus
 import com.kowerkoint.partnerwatch.status.StatusPreferences
+import com.kowerkoint.partnerwatch.notification.NotificationForwardingPreferences
+import com.kowerkoint.partnerwatch.notification.NotificationForwardingService
 import com.kowerkoint.partnerwatch.connection.StatusEventBus
 import com.kowerkoint.partnerwatch.security.DeviceSecurity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,6 +64,8 @@ sealed interface EnrollmentUiState {
         val sharingLocation:Boolean=false,
         val preciseLocation:Boolean=false,
         val partnerBattery: BatteryUiState = BatteryUiState.Idle,
+        val forwardingNotifications: Boolean = false,
+        val notificationAccessGranted: Boolean = false,
     ) : EnrollmentUiState
 }
 
@@ -81,6 +87,8 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private val capturePreferences = CapturePreferences(application.applicationContext)
     private val connectionPreferences = ConnectionPreferences(application.applicationContext)
     private val statusPreferences = StatusPreferences(application.applicationContext)
+    private val notificationForwardingPreferences = NotificationForwardingPreferences(application.applicationContext)
+    private val notificationAccess = MutableStateFlow(false)
     private val statusApi = StatusApi()
     private val batteryState = MutableStateFlow<BatteryUiState>(BatteryUiState.Idle)
     private val security = DeviceSecurity()
@@ -152,6 +160,14 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     fun setBatterySharing(value:Boolean) { viewModelScope.launch { statusPreferences.setSharingBattery(value); if(!value)runCatching{statusApi.clearOwnStatus(sessions.load(),"battery")} } }
     fun setLocationSharing(value:Boolean){viewModelScope.launch{statusPreferences.setSharingLocation(value);if(!value)runCatching{statusApi.clearOwnStatus(sessions.load(),"location")}}}
     fun setPreciseLocation(value:Boolean){viewModelScope.launch{statusPreferences.setPreciseLocation(value)}}
+    fun setNotificationForwarding(value: Boolean) { viewModelScope.launch { notificationForwardingPreferences.setEnabled(value) } }
+
+    fun refreshNotificationAccess() {
+        val manager = getApplication<Application>().getSystemService(NotificationManager::class.java)
+        notificationAccess.value = manager.isNotificationListenerAccessGranted(
+            ComponentName(getApplication(), NotificationForwardingService::class.java),
+        )
+    }
     fun requestPartnerStatus() { viewModelScope.launch {
         batteryState.value=BatteryUiState.Loading
         try {
@@ -219,6 +235,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
             capturePreferences.setAccepting(false)
             statusPreferences.setSharingBattery(false)
             statusPreferences.setSharingLocation(false)
+            notificationForwardingPreferences.setEnabled(false)
             store.clear()
             getApplication<Application>().stopService(android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java))
             mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
@@ -236,13 +253,17 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
+        refreshNotificationAccess()
         runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
         runCatching { refreshPartnerBattery() }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
-            val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery,statusPreferences.sharingLocation,statusPreferences.preciseLocation) { accepting, battery,location,precise -> listOf(accepting,battery,location,precise) }
-            combine(localSettings, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, combine(captureState,batteryState){capture,battery->capture to battery}) { settings, connected, connection, mode, remote ->
-                EnrollmentUiState.Registered(enrollment, settings[0], connected, connection, mode, remote.first, settings[1],settings[2],settings[3], remote.second)
+            val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery,statusPreferences.sharingLocation,statusPreferences.preciseLocation, notificationForwardingPreferences.enabled) { accepting, battery,location,precise,forwarding -> listOf(accepting,battery,location,precise,forwarding) }
+            val remoteState = combine(captureState,batteryState){capture,battery->capture to battery}
+            val settingsAndAccess = combine(localSettings, notificationAccess) { settings, access -> settings to access }
+            combine(settingsAndAccess, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, remoteState) { local, connected, connection, mode, remote ->
+                val settings = local.first
+                EnrollmentUiState.Registered(enrollment, settings[0], connected, connection, mode, remote.first, settings[1],settings[2],settings[3], remote.second, settings[4], local.second)
             }.collect { mutableState.value = it }
         }
         registeredObservationJob?.join()

@@ -23,6 +23,7 @@ var ErrCaptureRequestNotFound = errors.New("capture request not found")
 var ErrStatusRequestNotFound = errors.New("status request not found")
 var ErrStatusSnapshotNotFound = errors.New("status snapshot not found")
 var ErrPairNotFound = errors.New("pair not found")
+var ErrForwardedNotificationNotFound = errors.New("forwarded notification not found")
 
 type Store struct {
 	db      *sql.DB
@@ -96,6 +97,11 @@ type StatusSnapshot struct {
 	Battery               BatteryReport
 	Location              LocationReport
 	ReportedAt, ExpiresAt time.Time
+}
+
+type ForwardedNotification struct {
+	ID, PairID, SourceDeviceID, SourcePackage, SourceAppName, Title, Body string
+	PostedAt, CreatedAt, ExpiresAt                                        time.Time
 }
 
 const schema = `
@@ -198,6 +204,29 @@ CREATE TABLE IF NOT EXISTS status_snapshots (
     reported_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS forwarded_notifications (
+    id TEXT PRIMARY KEY,
+    pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+    source_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    source_package TEXT NOT NULL,
+    source_app_name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    posted_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS forwarded_notifications_source_created_idx ON forwarded_notifications(source_device_id, created_at);
+CREATE INDEX IF NOT EXISTS forwarded_notifications_expires_at_idx ON forwarded_notifications(expires_at);
+
+CREATE TABLE IF NOT EXISTS forwarded_notification_deliveries (
+    notification_id TEXT NOT NULL REFERENCES forwarded_notifications(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    delivered_at INTEGER,
+    PRIMARY KEY (notification_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS forwarded_notification_deliveries_device_idx ON forwarded_notification_deliveries(device_id, delivered_at);
 `
 
 func Open(dataDir string) (*Store, error) {
@@ -545,6 +574,109 @@ func (s *Store) DeleteExpiredImages(ctx context.Context) (int, error) {
 		}
 	}
 	return len(expired), nil
+}
+
+func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID string, item ForwardedNotification) (ForwardedNotification, []string, error) {
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("begin forwarded notification: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var pairID string
+	var sourceSlot int
+	if err := tx.QueryRowContext(ctx, `SELECT pair_id, slot FROM devices WHERE id=?`, sourceDeviceID).Scan(&pairID, &sourceSlot); errors.Is(err, sql.ErrNoRows) {
+		return ForwardedNotification{}, nil, ErrUnauthorized
+	} else if err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("find notification source: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM devices WHERE pair_id=? AND slot<>? ORDER BY created_at`, pairID, sourceSlot)
+	if err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("find notification targets: %w", err)
+	}
+	var targets []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return ForwardedNotification{}, nil, err
+		}
+		targets = append(targets, id)
+	}
+	if err := rows.Close(); err != nil {
+		return ForwardedNotification{}, nil, err
+	}
+	if len(targets) == 0 {
+		return ForwardedNotification{}, nil, ErrPartnerNotFound
+	}
+	var recent, hourly int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN created_at>? THEN 1 END), COUNT(*) FROM forwarded_notifications WHERE source_device_id=? AND created_at>?`, now.Add(-10*time.Second).Unix(), sourceDeviceID, now.Add(-time.Hour).Unix()).Scan(&recent, &hourly); err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("count forwarded notifications: %w", err)
+	}
+	if recent >= 20 || hourly >= 500 {
+		return ForwardedNotification{}, nil, ErrRateLimited
+	}
+	id, err := secret.Generate(16)
+	if err != nil {
+		return ForwardedNotification{}, nil, err
+	}
+	item.ID, item.PairID, item.SourceDeviceID = id, pairID, sourceDeviceID
+	item.CreatedAt, item.ExpiresAt = now, now.Add(time.Hour)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO forwarded_notifications(id,pair_id,source_device_id,source_package,source_app_name,title,body,posted_at,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, item.ID, item.PairID, item.SourceDeviceID, item.SourcePackage, item.SourceAppName, item.Title, item.Body, item.PostedAt.UTC().Unix(), item.CreatedAt.Unix(), item.ExpiresAt.Unix()); err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("insert forwarded notification: %w", err)
+	}
+	for _, target := range targets {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO forwarded_notification_deliveries(notification_id,device_id) VALUES(?,?)`, id, target); err != nil {
+			return ForwardedNotification{}, nil, fmt.Errorf("insert notification delivery: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) VALUES(?,?,'notification.forwarded',?)`, pairID, sourceDeviceID, now.Unix()); err != nil {
+		return ForwardedNotification{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ForwardedNotification{}, nil, fmt.Errorf("commit forwarded notification: %w", err)
+	}
+	return item, targets, nil
+}
+
+func (s *Store) PendingForwardedNotifications(ctx context.Context, deviceID string) ([]ForwardedNotification, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id,n.pair_id,n.source_device_id,n.source_package,n.source_app_name,n.title,n.body,n.posted_at,n.created_at,n.expires_at FROM forwarded_notifications n JOIN forwarded_notification_deliveries d ON d.notification_id=n.id WHERE d.device_id=? AND d.delivered_at IS NULL AND n.expires_at>? ORDER BY n.created_at`, deviceID, s.now().UTC().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("list forwarded notifications: %w", err)
+	}
+	defer rows.Close()
+	var result []ForwardedNotification
+	for rows.Next() {
+		var item ForwardedNotification
+		var posted, created, expires int64
+		if err := rows.Scan(&item.ID, &item.PairID, &item.SourceDeviceID, &item.SourcePackage, &item.SourceAppName, &item.Title, &item.Body, &posted, &created, &expires); err != nil {
+			return nil, err
+		}
+		item.PostedAt, item.CreatedAt, item.ExpiresAt = time.Unix(posted, 0).UTC(), time.Unix(created, 0).UTC(), time.Unix(expires, 0).UTC()
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) AcknowledgeForwardedNotification(ctx context.Context, deviceID, notificationID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE forwarded_notification_deliveries SET delivered_at=? WHERE notification_id=? AND device_id=? AND delivered_at IS NULL`, s.now().UTC().Unix(), notificationID, deviceID)
+	if err != nil {
+		return fmt.Errorf("acknowledge forwarded notification: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrForwardedNotificationNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteExpiredForwardedNotifications(ctx context.Context) (int, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM forwarded_notifications WHERE expires_at<=?`, s.now().UTC().Unix())
+	if err != nil {
+		return 0, fmt.Errorf("delete expired forwarded notifications: %w", err)
+	}
+	count, err := result.RowsAffected()
+	return int(count), err
 }
 
 func (s *Store) Close() error {

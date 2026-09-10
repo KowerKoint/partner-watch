@@ -20,6 +20,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kowerkoint.partnerwatch.ui.EnrollmentScreen
 import com.kowerkoint.partnerwatch.ui.EnrollmentViewModel
@@ -40,15 +41,19 @@ class MainActivity : ComponentActivity() {
                 val viewModel: EnrollmentViewModel = viewModel()
                 val state = viewModel.state.collectAsStateWithLifecycle()
                 val registered = state.value as? EnrollmentUiState.Registered
+                LifecycleResumeEffect(Unit) {
+                    viewModel.refreshNotificationAccess()
+                    onPauseOrDispose { }
+                }
                 LaunchedEffect(registered?.connectionMode) {
+                    if (registered != null && ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.POST_NOTIFICATIONS,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                     if (registered?.connectionMode == ConnectionMode.ALWAYS_CONNECTED) {
-                        if (ContextCompat.checkSelfPermission(
-                                this@MainActivity,
-                                Manifest.permission.POST_NOTIFICATIONS,
-                            ) != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
                         ContextCompat.startForegroundService(
                             this@MainActivity,
                             Intent(this@MainActivity, PartnerConnectionService::class.java),
@@ -78,6 +83,8 @@ class MainActivity : ComponentActivity() {
                     onPreciseLocationChanged={precise->viewModel.setPreciseLocation(precise);if(precise)locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION))},
                     onOpenLocationSettings={startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName")))},
                     onOpenMap={latitude,longitude->runCatching{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude")))}},
+                    onNotificationForwardingChanged=viewModel::setNotificationForwarding,
+                    onOpenNotificationAccessSettings={startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))},
                 )
             }
         }

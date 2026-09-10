@@ -58,6 +58,8 @@ fun EnrollmentScreen(
     onPreciseLocationChanged:(Boolean)->Unit,
     onOpenLocationSettings:()->Unit,
     onOpenMap:(Double,Double)->Unit,
+    onNotificationForwardingChanged: (Boolean) -> Unit,
+    onOpenNotificationAccessSettings: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -87,6 +89,8 @@ fun EnrollmentScreen(
                 onPreciseLocationChanged=onPreciseLocationChanged,
                 onOpenLocationSettings=onOpenLocationSettings,
                 onOpenMap=onOpenMap,
+                onNotificationForwardingChanged=onNotificationForwardingChanged,
+                onOpenNotificationAccessSettings=onOpenNotificationAccessSettings,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -185,6 +189,8 @@ private fun RegisteredContent(
     onPreciseLocationChanged:(Boolean)->Unit,
     onOpenLocationSettings:()->Unit,
     onOpenMap:(Double,Double)->Unit,
+    onNotificationForwardingChanged: (Boolean) -> Unit,
+    onOpenNotificationAccessSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -209,12 +215,34 @@ private fun RegisteredContent(
                 MaterialTheme.colorScheme.error
             },
         )
-        Text("撮影要求の待機方法", style = MaterialTheme.typography.titleLarge)
+        Text("バックグラウンドの待機方法", style = MaterialTheme.typography.titleLarge)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { onConnectionModeChanged(ConnectionMode.ALWAYS_CONNECTED) }, enabled = state.connectionMode != ConnectionMode.ALWAYS_CONNECTED, modifier = Modifier.weight(1f)) { Text("常に待機") }
             Button(onClick = { onConnectionModeChanged(ConnectionMode.FCM_ONLY) }, enabled = state.connectionMode != ConnectionMode.FCM_ONLY, modifier = Modifier.weight(1f)) { Text("省電力") }
         }
-        Text(if (state.connectionMode == ConnectionMode.FCM_ONLY) "省電力: 通知を受けたときだけ一時的に接続します。撮影要求の到着が少し遅れる場合があります。" else "常に待機: すぐに撮影要求を受け取れますが、バッテリーを多く使います。", style = MaterialTheme.typography.bodySmall)
+        Text(if (state.connectionMode == ConnectionMode.FCM_ONLY) "省電力: サーバーから合図を受けたときだけ一時的に接続します。要求や転送通知の到着が少し遅れる場合があります。" else "常に待機: 要求や転送通知をすぐに受け取れますが、バッテリーを多く使います。", style = MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        Text("通知の転送", style = MaterialTheme.typography.titleLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("この端末の通知を相手へ転送", style = MaterialTheme.typography.titleMedium)
+                Text("通知のアプリ名・タイトル・本文を転送します", style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = state.forwardingNotifications, onCheckedChange = onNotificationForwardingChanged)
+        }
+        Text(
+            if (state.notificationAccessGranted) "通知へのアクセス: 許可済み" else "通知へのアクセス: 未許可",
+            color = if (state.notificationAccessGranted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
+        if (!state.notificationAccessGranted) {
+            Text("転送を使うにはAndroidの設定でPartner Watchに通知へのアクセスを許可してください。")
+            Button(onClick = onOpenNotificationAccessSettings, modifier = Modifier.fillMaxWidth()) { Text("通知へのアクセス設定を開く") }
+        }
+        Text("相手にはPartner Watchからのサイレント通知として届きます。継続中の通知など、一部は転送されません。", style = MaterialTheme.typography.bodySmall)
         HorizontalDivider()
         Text("相手の画面", style = MaterialTheme.typography.titleLarge)
         Button(
@@ -365,6 +393,8 @@ private fun EnrollmentFormPreview() {
             onPreciseLocationChanged={},
             onOpenLocationSettings={},
             onOpenMap={_,_->},
+            onNotificationForwardingChanged={},
+            onOpenNotificationAccessSettings={},
         )
     }
 }
