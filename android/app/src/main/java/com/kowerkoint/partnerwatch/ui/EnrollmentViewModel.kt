@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kowerkoint.partnerwatch.data.EnrollmentApi
@@ -255,6 +256,8 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private suspend fun observeRegisteredState(enrollment: SavedEnrollment) {
         refreshNotificationAccess()
         runCatching { FcmTokenRegistrar.register(getApplication(), sessions) }
+            .onSuccess { Log.i(TAG, "FCM token registered") }
+            .onFailure { Log.w(TAG, "FCM token registration failed: ${it.javaClass.simpleName}: ${it.message}") }
         runCatching { refreshPartnerBattery() }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
@@ -296,4 +299,6 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private fun showError(previous: EnrollmentForm, message: String) {
         mutableState.value = EnrollmentUiState.Form(previous.copy(isSubmitting = false, errorMessage = message))
     }
+
+    private companion object { const val TAG = "PartnerWatchEnrollment" }
 }
