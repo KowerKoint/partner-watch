@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
@@ -43,6 +44,14 @@ func (s *Sender) SendWakeup(ctx context.Context, deviceID, pairID string) error 
 	if err != nil || token == "" {
 		return err
 	}
-	_, err = s.client.Send(ctx, &messaging.Message{Token: token, Data: map[string]string{"type": "capture.wakeup", "pairId": pairID}})
+	ttl := time.Minute
+	_, err = s.client.Send(ctx, &messaging.Message{
+		Token: token,
+		Data:  map[string]string{"type": "capture.wakeup", "pairId": pairID},
+		Android: &messaging.AndroidConfig{
+			Priority: "high",
+			TTL:      &ttl,
+		},
+	})
 	return err
 }
