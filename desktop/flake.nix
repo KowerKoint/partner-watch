@@ -1,8 +1,17 @@
 {
   description = "Partner Watch desktop client";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
   outputs =
-    { self, nixpkgs, ... }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+      ...
+    }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
@@ -28,6 +37,43 @@
           platforms = [ "x86_64-linux" ];
         };
       };
+      nixosEvaluation = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          self.nixosModules.default
+          {
+            system.stateVersion = "26.05";
+            services.partner-watch-desktop = {
+              enable = true;
+              user = "test-user";
+              serverUrl = "https://partner-watch.example.com";
+              deviceName = "Test PC";
+              acceptCaptures = true;
+              forwardNotifications = true;
+            };
+          }
+        ];
+      };
+      homeEvaluation = home-manager.lib.homeManagerConfiguration {
+        inherit pkgs;
+        modules = [
+          self.homeManagerModules.default
+          {
+            home = {
+              username = "test-user";
+              homeDirectory = "/home/test-user";
+              stateVersion = "26.05";
+            };
+            services.partner-watch-desktop = {
+              enable = true;
+              serverUrl = "https://partner-watch.example.com";
+              deviceName = "Test PC";
+              acceptCaptures = true;
+              forwardNotifications = true;
+            };
+          }
+        ];
+      };
     in
     {
       packages.${system}.default = package;
@@ -51,6 +97,15 @@
       };
       nixosModules.default = import ./nix/nixos-module.nix {
         partnerWatchPackage = self.packages.${system}.default;
+      };
+      checks.${system} = {
+        package = package;
+        nixos-module = pkgs.writeText "partner-watch-nixos-module-check" (
+          nixosEvaluation.config.systemd.user.services.partner-watch-desktop.serviceConfig.ExecStart
+        );
+        home-manager-module = pkgs.writeText "partner-watch-home-manager-module-check" (
+          builtins.concatStringsSep " " homeEvaluation.config.systemd.user.services.partner-watch-desktop.Service.ExecStart
+        );
       };
     };
 }
