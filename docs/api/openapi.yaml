@@ -294,6 +294,48 @@ paths:
           description: Delivery acknowledged.
         "404":
           description: Notification is not pending for this device.
+  /v1/notification-filters:
+    get:
+      operationId: listNotificationFilters
+      description: Lists rejection rules owned by the authenticated device's side of the pair.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Notification filters.
+    post:
+      operationId: createNotificationFilter
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationFilterInput" }
+      responses:
+        "201":
+          description: Filter created.
+  /v1/notification-filters/{filterId}:
+    parameters:
+      - name: filterId
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      operationId: updateNotificationFilter
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationFilterInput" }
+      responses:
+        "200": { description: Filter updated. }
+        "404": { description: Filter does not belong to this side. }
+    delete:
+      operationId: deleteNotificationFilter
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Filter deleted. }
+        "404": { description: Filter does not belong to this side. }
 components:
   securitySchemes:
     bearerAuth:
@@ -505,12 +547,39 @@ components:
           properties:
             id:
               type: string
+            sourceDeviceId:
+              type: string
+            sourceDeviceName:
+              type: string
             createdAt:
               type: string
               format: date-time
             expiresAt:
               type: string
               format: date-time
+    NotificationFilterInput:
+      type: object
+      additionalProperties: false
+      required: [sourceDeviceId, sourceDeviceName, sourcePackage, sourceAppName, titlePattern, titleMatch, messagePattern, messageMatch, enabled]
+      properties:
+        sourceDeviceId: { type: string, maxLength: 128 }
+        sourceDeviceName: { type: string, maxLength: 120 }
+        sourcePackage: { type: string, maxLength: 255 }
+        sourceAppName: { type: string, maxLength: 120 }
+        titlePattern: { type: string, maxLength: 500 }
+        titleMatch: { type: string, enum: [CONTAINS, EXACT] }
+        messagePattern: { type: string, maxLength: 500 }
+        messageMatch: { type: string, enum: [CONTAINS, EXACT] }
+        enabled: { type: boolean }
+    NotificationFilter:
+      allOf:
+        - $ref: "#/components/schemas/NotificationFilterInput"
+        - type: object
+          required: [id, createdAt, updatedAt]
+          properties:
+            id: { type: string }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
     DeviceEvent:
       oneOf:
         - type: object

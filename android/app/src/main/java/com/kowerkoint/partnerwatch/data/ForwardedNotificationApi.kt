@@ -12,6 +12,8 @@ import java.time.Instant
 
 data class ForwardedNotification(
     val id: String,
+    val sourceDeviceId: String,
+    val sourceDeviceName: String,
     val sourcePackage: String,
     val sourceAppName: String,
     val title: String,
@@ -34,7 +36,7 @@ class ForwardedNotificationApi(private val client: OkHttpClient = OkHttpClient()
             val array = JSONObject(response.body.string()).getJSONArray("notifications")
             (0 until array.length()).map { index ->
                 val item = array.getJSONObject(index)
-                ForwardedNotification(item.getString("id"), item.getString("sourcePackage"), item.getString("sourceAppName"), item.getString("title"), item.getString("body"), Instant.parse(item.getString("postedAt")))
+                ForwardedNotification(item.getString("id"), item.optString("sourceDeviceId"), item.optString("sourceDeviceName"), item.getString("sourcePackage"), item.getString("sourceAppName"), item.getString("title"), item.getString("body"), Instant.parse(item.getString("postedAt")))
             }
         }
     }

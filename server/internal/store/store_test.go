@@ -186,6 +186,67 @@ func TestForwardedNotificationDeliveryAndExpiry(t *testing.T) {
 	}
 }
 
+func TestNotificationFilterBlocksBeforeStorageAndDelivery(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	base := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+
+	filter, err := s.SaveNotificationFilter(ctx, second.DeviceID, NotificationFilter{
+		SourceDeviceID: first.DeviceID, SourceDeviceName: "Pixel", SourcePackage: "com.example.chat",
+		SourceAppName: "Chat", TitlePattern: "ＡＬＥＲＴ", TitleMatch: "CONTAINS", MessageMatch: "CONTAINS", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveNotificationFilter: %v", err)
+	}
+	if filters, err := s.ListNotificationFilters(ctx, second.DeviceID); err != nil || len(filters) != 1 || filters[0].ID != filter.ID {
+		t.Fatalf("filters=%+v err=%v", filters, err)
+	}
+	created, targets, err := s.CreateForwardedNotification(ctx, first.DeviceID, ForwardedNotification{
+		SourcePackage: "com.example.chat", SourceAppName: "Chat", Title: "System alert", Body: "battery", PostedAt: base,
+	})
+	if err != nil || created.ID == "" || len(targets) != 0 {
+		t.Fatalf("created=%+v targets=%v err=%v", created, targets, err)
+	}
+	var stored int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM forwarded_notifications WHERE id=?`, created.ID).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("stored=%d err=%v", stored, err)
+	}
+	if err := s.DeleteNotificationFilter(ctx, second.DeviceID, filter.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotificationFilterIsScopedToReceivingSlot(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	filter, err := s.SaveNotificationFilter(ctx, second.DeviceID, NotificationFilter{SourcePackage: "com.example.chat", TitleMatch: "CONTAINS", MessageMatch: "CONTAINS", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own, err := s.ListNotificationFilters(ctx, first.DeviceID); err != nil || len(own) != 0 {
+		t.Fatalf("sender filters=%+v err=%v", own, err)
+	}
+	filter.SourcePackage = "com.example.other"
+	if _, err := s.SaveNotificationFilter(ctx, first.DeviceID, filter); !errors.Is(err, ErrNotificationFilterNotFound) {
+		t.Fatalf("cross-slot update error=%v", err)
+	}
+}
+
+func TestNotificationTextMatchModesNormalizeCaseAndWidth(t *testing.T) {
+	if !notificationTextMatches("Ａｌｉｃｅ", "alice", "EXACT") {
+		t.Fatal("normalized exact match failed")
+	}
+	if notificationTextMatches("Alice (group)", "alice", "EXACT") {
+		t.Fatal("exact match accepted extra text")
+	}
+	if !notificationTextMatches("Alice (group)", "alice", "CONTAINS") {
+		t.Fatal("contains match failed")
+	}
+}
+
 func TestCaptureRequestRateLimitAndCompletion(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

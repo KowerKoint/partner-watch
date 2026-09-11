@@ -32,6 +32,8 @@ import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
 import com.kowerkoint.partnerwatch.data.ForwardedNotification
 import com.kowerkoint.partnerwatch.data.ForwardedNotificationApi
+import com.kowerkoint.partnerwatch.data.NotificationFilterApi
+import com.kowerkoint.partnerwatch.data.NotificationFilterCache
 import com.kowerkoint.partnerwatch.data.PendingCaptureApi
 import com.kowerkoint.partnerwatch.data.StatusApi
 import com.kowerkoint.partnerwatch.status.StatusPreferences
@@ -98,6 +100,8 @@ class PartnerConnectionService : Service() {
     private val pendingCaptureApi = PendingCaptureApi(client)
     private val statusApi = StatusApi(client)
     private val forwardedNotificationApi = ForwardedNotificationApi(client)
+    private val notificationFilterApi = NotificationFilterApi(client)
+    private lateinit var notificationFilterCache: NotificationFilterCache
     private lateinit var statusPreferences: StatusPreferences
     private lateinit var locationCollector: LocationCollector
     private var connectionJob: Job? = null
@@ -115,6 +119,7 @@ class PartnerConnectionService : Service() {
             ImageRepository(ImageApi(client), sessions),
         )
         notificationManager = getSystemService(NotificationManager::class.java)
+        notificationFilterCache = NotificationFilterCache(applicationContext)
         createNotificationChannel()
         createCaptureNotificationChannel()
         createStatusNotificationChannel()
@@ -220,8 +225,10 @@ class PartnerConnectionService : Service() {
 
     private suspend fun processForwardedNotifications(session: DeviceSession) {
         forwardedNotificationMutex.withLock {
+            val filters = runCatching { notificationFilterApi.list(session) }
+                .onSuccess { notificationFilterCache.save(it) }.getOrElse { notificationFilterCache.load() }
             runCatching { forwardedNotificationApi.pending(session) }.getOrDefault(emptyList()).forEach { item ->
-                showForwardedNotification(item)
+                if (filters.none { it.matches(item) }) showForwardedNotification(item)
                 runCatching { forwardedNotificationApi.acknowledge(session, item.id) }
             }
         }
@@ -304,6 +311,17 @@ class PartnerConnectionService : Service() {
             .setSilent(true)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .addAction(0, "この種類を受信しない", PendingIntent.getActivity(
+                this, item.id.hashCode(), Intent(this, MainActivity::class.java).apply {
+                    action = MainActivity.ACTION_ADD_NOTIFICATION_FILTER
+                    putExtra(MainActivity.EXTRA_SOURCE_DEVICE_ID, item.sourceDeviceId)
+                    putExtra(MainActivity.EXTRA_SOURCE_DEVICE_NAME, item.sourceDeviceName)
+                    putExtra(MainActivity.EXTRA_SOURCE_PACKAGE, item.sourcePackage)
+                    putExtra(MainActivity.EXTRA_SOURCE_APP_NAME, item.sourceAppName)
+                    putExtra(MainActivity.EXTRA_NOTIFICATION_TITLE, item.title)
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ))
             .build()
         notificationManager.notify(item.id.hashCode(), notification)
     }

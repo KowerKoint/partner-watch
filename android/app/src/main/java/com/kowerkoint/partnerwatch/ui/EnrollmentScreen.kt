@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -23,6 +24,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -35,6 +37,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 import com.kowerkoint.partnerwatch.connection.ConnectionMode
+import com.kowerkoint.partnerwatch.data.NotificationFilter
+import com.kowerkoint.partnerwatch.data.TextMatch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +62,14 @@ fun EnrollmentScreen(
     onOpenMap:(Double,Double)->Unit,
     onNotificationForwardingChanged: (Boolean) -> Unit,
     onOpenNotificationAccessSettings: () -> Unit,
+    onAddNotificationFilter: () -> Unit,
+    onEditNotificationFilter: (NotificationFilter) -> Unit,
+    onUpdateNotificationFilter: (NotificationFilter) -> Unit,
+    onSaveNotificationFilter: () -> Unit,
+    onCancelNotificationFilter: () -> Unit,
+    onDeleteNotificationFilter: (NotificationFilter) -> Unit,
+    onNotificationFilterEnabledChanged: (NotificationFilter, Boolean) -> Unit,
+    onUseSuggestedFilterTitle: () -> Unit,
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Partner Watch") }) },
@@ -88,6 +100,7 @@ fun EnrollmentScreen(
                 onOpenMap=onOpenMap,
                 onNotificationForwardingChanged=onNotificationForwardingChanged,
                 onOpenNotificationAccessSettings=onOpenNotificationAccessSettings,
+                onAddNotificationFilter=onAddNotificationFilter,onEditNotificationFilter=onEditNotificationFilter,onUpdateNotificationFilter=onUpdateNotificationFilter,onSaveNotificationFilter=onSaveNotificationFilter,onCancelNotificationFilter=onCancelNotificationFilter,onDeleteNotificationFilter=onDeleteNotificationFilter,onNotificationFilterEnabledChanged=onNotificationFilterEnabledChanged,onUseSuggestedFilterTitle=onUseSuggestedFilterTitle,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -187,6 +200,14 @@ private fun RegisteredContent(
     onOpenMap:(Double,Double)->Unit,
     onNotificationForwardingChanged: (Boolean) -> Unit,
     onOpenNotificationAccessSettings: () -> Unit,
+    onAddNotificationFilter: () -> Unit,
+    onEditNotificationFilter: (NotificationFilter) -> Unit,
+    onUpdateNotificationFilter: (NotificationFilter) -> Unit,
+    onSaveNotificationFilter: () -> Unit,
+    onCancelNotificationFilter: () -> Unit,
+    onDeleteNotificationFilter: (NotificationFilter) -> Unit,
+    onNotificationFilterEnabledChanged: (NotificationFilter, Boolean) -> Unit,
+    onUseSuggestedFilterTitle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -239,6 +260,16 @@ private fun RegisteredContent(
             Button(onClick = onOpenNotificationAccessSettings, modifier = Modifier.fillMaxWidth()) { Text("通知へのアクセス設定を開く") }
         }
         Text("相手にはPartner Watchからのサイレント通知として届きます。継続中の通知など、一部は転送されません。", style = MaterialTheme.typography.bodySmall)
+        Text("受信する通知", style = MaterialTheme.typography.titleMedium)
+        Text("不要な種類を指定すると、サーバーからこの側の端末へは配信されません。", style = MaterialTheme.typography.bodySmall)
+        state.notificationFilters.forEach { filter ->
+            Row(modifier=Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                Column(modifier=Modifier.weight(1f)) { Text(filterDescription(filter));TextButton(onClick={onEditNotificationFilter(filter)}){Text("編集")} }
+                Switch(checked=filter.enabled,onCheckedChange={onNotificationFilterEnabledChanged(filter,it)})
+            }
+        }
+        Button(onClick=onAddNotificationFilter,modifier=Modifier.fillMaxWidth()){Text("受信しない通知を追加")}
+        state.filterError?.let { Text(it,color=MaterialTheme.colorScheme.error) }
         HorizontalDivider()
         Text("相手の画面", style = MaterialTheme.typography.titleLarge)
         Button(
@@ -353,7 +384,27 @@ private fun RegisteredContent(
             Text("この端末の登録を解除")
         }
     }
+    state.filterDraft?.let { draft -> NotificationFilterDialog(draft,state.filterSuggestedTitle,onUpdateNotificationFilter,onSaveNotificationFilter,onCancelNotificationFilter,{onDeleteNotificationFilter(draft)},onUseSuggestedFilterTitle) }
 }
+
+@Composable
+private fun NotificationFilterDialog(draft:NotificationFilter,suggestedTitle:String,onUpdate:(NotificationFilter)->Unit,onSave:()->Unit,onCancel:()->Unit,onDelete:()->Unit,onUseSuggestedTitle:()->Unit){
+    val valid=draft.sourceDeviceId.isNotBlank()||draft.sourcePackage.isNotBlank()||draft.titlePattern.isNotBlank()||draft.messagePattern.isNotBlank()
+    AlertDialog(onDismissRequest=onCancel,title={Text(if(draft.id.isEmpty())"受信しない通知を追加" else "受信フィルターを編集")},text={Column(modifier=Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
+        OutlinedTextField(draft.sourceDeviceId,{onUpdate(draft.copy(sourceDeviceId=it,sourceDeviceName=if(it==draft.sourceDeviceId)draft.sourceDeviceName else ""))},label={Text("送信元端末ID")},supportingText={Text(draft.sourceDeviceName.ifBlank{"空欄ならすべての端末。通知のボタンから追加すると自動入力されます"})})
+        OutlinedTextField(draft.sourcePackage,{onUpdate(draft.copy(sourcePackage=it,sourceAppName=if(it==draft.sourcePackage)draft.sourceAppName else ""))},label={Text("アプリ識別子")},supportingText={Text(draft.sourceAppName.ifBlank{"例: jp.naver.line.android。通知のボタンから追加すると自動入力されます"})})
+        OutlinedTextField(draft.titlePattern,{onUpdate(draft.copy(titlePattern=it))},label={Text("通知タイトル")},supportingText={Text("送信者名など")})
+        MatchButtons(draft.titleMatch){onUpdate(draft.copy(titleMatch=it))}
+        if(suggestedTitle.isNotBlank()&&draft.titlePattern.isBlank())TextButton(onClick=onUseSuggestedTitle){Text("この通知のタイトル「${suggestedTitle.take(40)}」を使う")}
+        OutlinedTextField(draft.messagePattern,{onUpdate(draft.copy(messagePattern=it))},label={Text("タイトル・本文")})
+        MatchButtons(draft.messageMatch){onUpdate(draft.copy(messageMatch=it))}
+        Text(if(valid)filterDescription(draft) else "少なくとも1つの条件を入力してください",color=if(valid)MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+        if(draft.id.isNotEmpty())TextButton(onClick=onDelete){Text("このフィルターを削除",color=MaterialTheme.colorScheme.error)}
+    }},confirmButton={Button(onClick=onSave,enabled=valid){Text("保存")}},dismissButton={TextButton(onClick=onCancel){Text("キャンセル")}})
+}
+
+@Composable private fun MatchButtons(value:TextMatch,onChange:(TextMatch)->Unit){Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedButton(onClick={onChange(TextMatch.CONTAINS)},enabled=value!=TextMatch.CONTAINS){Text("含む")};OutlinedButton(onClick={onChange(TextMatch.EXACT)},enabled=value!=TextMatch.EXACT){Text("完全一致")}}}
+private fun filterDescription(v:NotificationFilter):String=buildList{if(v.sourceDeviceId.isNotBlank())add("${v.sourceDeviceName.ifBlank{"指定端末"}}から");if(v.sourcePackage.isNotBlank())add("${v.sourceAppName.ifBlank{v.sourcePackage}}の");if(v.titlePattern.isNotBlank())add("タイトルが「${v.titlePattern}」を${if(v.titleMatch==TextMatch.EXACT)"完全一致" else "含む"}");if(v.messagePattern.isNotBlank())add("メッセージが「${v.messagePattern}」を${if(v.messageMatch==TextMatch.EXACT)"完全一致" else "含む"}")}.joinToString(" ")+"通知を受信しない"
 
 @Composable
 private fun DetailRow(label: String, value: String) {
@@ -387,6 +438,7 @@ private fun EnrollmentFormPreview() {
             onOpenMap={_,_->},
             onNotificationForwardingChanged={},
             onOpenNotificationAccessSettings={},
+            onAddNotificationFilter={},onEditNotificationFilter={},onUpdateNotificationFilter={},onSaveNotificationFilter={},onCancelNotificationFilter={},onDeleteNotificationFilter={},onNotificationFilterEnabledChanged={_,_->},onUseSuggestedFilterTitle={},
         )
     }
 }

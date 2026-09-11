@@ -8,6 +8,7 @@ import android.net.Uri
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
 import com.kowerkoint.partnerwatch.connection.PartnerConnectionService
@@ -21,24 +22,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kowerkoint.partnerwatch.ui.EnrollmentScreen
 import com.kowerkoint.partnerwatch.ui.EnrollmentViewModel
 
 class MainActivity : ComponentActivity() {
+    private val enrollmentViewModel: EnrollmentViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
         )
+        handleFilterIntent(intent)
         val notificationPermission = registerForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) { }
         val locationPermission=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){ }
         setContent {
             PartnerWatchTheme {
-                val viewModel: EnrollmentViewModel = viewModel()
+                val viewModel = enrollmentViewModel
                 val state = viewModel.state.collectAsStateWithLifecycle()
                 val registered = state.value as? EnrollmentUiState.Registered
                 LifecycleResumeEffect(Unit) {
@@ -84,9 +86,26 @@ class MainActivity : ComponentActivity() {
                     onOpenMap={latitude,longitude->runCatching{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude")))}},
                     onNotificationForwardingChanged=viewModel::setNotificationForwarding,
                     onOpenNotificationAccessSettings={startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))},
+                    onAddNotificationFilter={viewModel.startNotificationFilter()},
+                    onEditNotificationFilter=viewModel::startNotificationFilter,
+                    onUpdateNotificationFilter=viewModel::updateNotificationFilter,
+                    onSaveNotificationFilter=viewModel::saveNotificationFilter,
+                    onCancelNotificationFilter=viewModel::cancelNotificationFilter,
+                    onDeleteNotificationFilter=viewModel::deleteNotificationFilter,
+                    onNotificationFilterEnabledChanged=viewModel::setNotificationFilterEnabled,
+                    onUseSuggestedFilterTitle=viewModel::useSuggestedFilterTitle,
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);setIntent(intent);handleFilterIntent(intent) }
+    private fun handleFilterIntent(intent: Intent?) { if(intent?.action!=ACTION_ADD_NOTIFICATION_FILTER)return;enrollmentViewModel.startNotificationFilterFromNotification(intent.getStringExtra(EXTRA_SOURCE_DEVICE_ID).orEmpty(),intent.getStringExtra(EXTRA_SOURCE_DEVICE_NAME).orEmpty(),intent.getStringExtra(EXTRA_SOURCE_PACKAGE).orEmpty(),intent.getStringExtra(EXTRA_SOURCE_APP_NAME).orEmpty(),intent.getStringExtra(EXTRA_NOTIFICATION_TITLE).orEmpty());intent.action=null }
+
+    companion object {
+        const val ACTION_ADD_NOTIFICATION_FILTER="com.kowerkoint.partnerwatch.ADD_NOTIFICATION_FILTER"
+        const val EXTRA_SOURCE_DEVICE_ID="sourceDeviceId";const val EXTRA_SOURCE_DEVICE_NAME="sourceDeviceName"
+        const val EXTRA_SOURCE_PACKAGE="sourcePackage";const val EXTRA_SOURCE_APP_NAME="sourceAppName";const val EXTRA_NOTIFICATION_TITLE="notificationTitle"
     }
 }
 

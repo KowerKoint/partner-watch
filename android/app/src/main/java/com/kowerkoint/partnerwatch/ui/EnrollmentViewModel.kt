@@ -26,6 +26,10 @@ import com.kowerkoint.partnerwatch.data.ImageApi
 import com.kowerkoint.partnerwatch.data.ImageRepository
 import com.kowerkoint.partnerwatch.data.PhotoCollection
 import com.kowerkoint.partnerwatch.data.StatusApi
+import com.kowerkoint.partnerwatch.data.NotificationFilter
+import com.kowerkoint.partnerwatch.data.NotificationFilterApi
+import com.kowerkoint.partnerwatch.data.NotificationFilterCache
+import com.kowerkoint.partnerwatch.data.TextMatch
 import com.kowerkoint.partnerwatch.data.PartnerBatteryStatus
 import com.kowerkoint.partnerwatch.status.StatusPreferences
 import com.kowerkoint.partnerwatch.notification.NotificationForwardingPreferences
@@ -65,6 +69,10 @@ sealed interface EnrollmentUiState {
         val partnerBattery: BatteryUiState = BatteryUiState.Idle,
         val forwardingNotifications: Boolean = false,
         val notificationAccessGranted: Boolean = false,
+        val notificationFilters: List<NotificationFilter> = emptyList(),
+        val filterDraft: NotificationFilter? = null,
+        val filterError: String? = null,
+        val filterSuggestedTitle: String = "",
     ) : EnrollmentUiState
 }
 
@@ -77,6 +85,7 @@ sealed interface CaptureUiState {
     data class Error(val message: String) : CaptureUiState
 }
 data class ReceivedCaptureImage(val deviceName: String, val displayName: String, val jpeg: ByteArray)
+private data class NotificationFilterUiState(val filters:List<NotificationFilter>,val draft:NotificationFilter?,val error:String?,val suggestedTitle:String)
 
 class EnrollmentViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = EnrollmentRepository(
@@ -89,6 +98,12 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private val statusPreferences = StatusPreferences(application.applicationContext)
     private val notificationForwardingPreferences = NotificationForwardingPreferences(application.applicationContext)
     private val notificationAccess = MutableStateFlow(false)
+    private val notificationFilters = MutableStateFlow<List<NotificationFilter>>(emptyList())
+    private val filterDraft = MutableStateFlow<NotificationFilter?>(null)
+    private val filterError = MutableStateFlow<String?>(null)
+    private val filterSuggestedTitle = MutableStateFlow("")
+    private val notificationFilterApi = NotificationFilterApi()
+    private val notificationFilterCache = NotificationFilterCache(application.applicationContext)
     private val statusApi = StatusApi()
     private val batteryState = MutableStateFlow<BatteryUiState>(BatteryUiState.Idle)
     private val security = DeviceSecurity()
@@ -150,6 +165,15 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     fun setLocationSharing(value:Boolean){viewModelScope.launch{statusPreferences.setSharingLocation(value);if(!value)runCatching{statusApi.clearOwnStatus(sessions.load(),"location")}}}
     fun setPreciseLocation(value:Boolean){viewModelScope.launch{statusPreferences.setPreciseLocation(value)}}
     fun setNotificationForwarding(value: Boolean) { viewModelScope.launch { notificationForwardingPreferences.setEnabled(value) } }
+
+    fun startNotificationFilter(draft: NotificationFilter = NotificationFilter()) { filterDraft.value = draft; filterError.value = null }
+    fun updateNotificationFilter(draft: NotificationFilter) { filterDraft.value = draft; filterError.value = null }
+    fun cancelNotificationFilter() { filterDraft.value = null; filterError.value = null;filterSuggestedTitle.value="" }
+    fun saveNotificationFilter() { val draft=filterDraft.value?:return;viewModelScope.launch { try { notificationFilterApi.save(sessions.load(),draft).also { saved -> val next=notificationFilters.value.filterNot{it.id==saved.id}+saved;notificationFilters.value=next;notificationFilterCache.save(next);filterDraft.value=null;filterError.value=null;filterSuggestedTitle.value="" } } catch(e:Exception){filterError.value=e.message?:"通知フィルターを保存できませんでした"} } }
+    fun deleteNotificationFilter(value: NotificationFilter) { viewModelScope.launch { try { notificationFilterApi.delete(sessions.load(),value.id);val next=notificationFilters.value.filterNot{it.id==value.id};notificationFilters.value=next;notificationFilterCache.save(next);if(filterDraft.value?.id==value.id)filterDraft.value=null }catch(e:Exception){filterError.value=e.message?:"通知フィルターを削除できませんでした"} } }
+    fun setNotificationFilterEnabled(value: NotificationFilter, enabled:Boolean) { viewModelScope.launch { try { val saved=notificationFilterApi.save(sessions.load(),value.copy(enabled=enabled));val next=notificationFilters.value.map{if(it.id==saved.id)saved else it};notificationFilters.value=next;notificationFilterCache.save(next) }catch(e:Exception){filterError.value=e.message?:"通知フィルターを更新できませんでした"} } }
+    fun startNotificationFilterFromNotification(sourceDeviceId:String,sourceDeviceName:String,sourcePackage:String,sourceAppName:String,title:String){startNotificationFilter(NotificationFilter(sourceDeviceId=sourceDeviceId,sourceDeviceName=sourceDeviceName,sourcePackage=sourcePackage,sourceAppName=sourceAppName,titlePattern="",titleMatch=TextMatch.CONTAINS));filterSuggestedTitle.value=title}
+    fun useSuggestedFilterTitle(){filterDraft.value=filterDraft.value?.copy(titlePattern=filterSuggestedTitle.value);filterSuggestedTitle.value=""}
 
     fun refreshNotificationAccess() {
         val manager = getApplication<Application>().getSystemService(NotificationManager::class.java)
@@ -237,6 +261,7 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
             statusPreferences.setSharingBattery(false)
             statusPreferences.setSharingLocation(false)
             notificationForwardingPreferences.setEnabled(false)
+            notificationFilterCache.clear()
             store.clear()
             getApplication<Application>().stopService(android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java))
             mutableState.value = EnrollmentUiState.Form(EnrollmentForm())
@@ -253,14 +278,17 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
             .onSuccess { Log.i(TAG, "FCM token registered") }
             .onFailure { Log.w(TAG, "FCM token registration failed: ${it.javaClass.simpleName}: ${it.message}") }
         runCatching { refreshPartnerBattery() }
+        notificationFilters.value = notificationFilterCache.load()
+        runCatching { notificationFilterApi.list(sessions.load()) }.onSuccess { notificationFilters.value=it;notificationFilterCache.save(it) }
         registeredObservationJob?.cancel()
         registeredObservationJob = viewModelScope.launch {
             val localSettings = combine(capturePreferences.accepting, statusPreferences.sharingBattery,statusPreferences.sharingLocation,statusPreferences.preciseLocation, notificationForwardingPreferences.enabled) { accepting, battery,location,precise,forwarding -> listOf(accepting,battery,location,precise,forwarding) }
-            val remoteState = combine(captureState,batteryState){capture,battery->capture to battery}
+            val filterState=combine(notificationFilters,filterDraft,filterError,filterSuggestedTitle){filters,draft,error,suggestion->NotificationFilterUiState(filters,draft,error,suggestion)}
+            val remoteState = combine(captureState,batteryState,filterState){capture,battery,filters->Triple(capture,battery,filters)}
             val settingsAndAccess = combine(localSettings, notificationAccess) { settings, access -> settings to access }
             combine(settingsAndAccess, PartnerAccessibilityService.connected, ConnectionStatusBus.status, connectionPreferences.mode, remoteState) { local, connected, connection, mode, remote ->
                 val settings = local.first
-                EnrollmentUiState.Registered(enrollment, settings[0], connected, connection, mode, remote.first, settings[1],settings[2],settings[3], remote.second, settings[4], local.second)
+                EnrollmentUiState.Registered(enrollment, settings[0], connected, connection, mode, remote.first, settings[1],settings[2],settings[3], remote.second, settings[4], local.second, remote.third.filters,remote.third.draft,remote.third.error,remote.third.suggestedTitle)
             }.collect { mutableState.value = it }
         }
         registeredObservationJob?.join()

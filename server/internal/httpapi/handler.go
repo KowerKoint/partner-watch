@@ -76,6 +76,11 @@ type ForwardedNotificationStore interface {
 	PendingForwardedNotifications(context.Context, string) ([]store.ForwardedNotification, error)
 	AcknowledgeForwardedNotification(context.Context, string, string) error
 }
+type NotificationFilterStore interface {
+	ListNotificationFilters(context.Context, string) ([]store.NotificationFilter, error)
+	SaveNotificationFilter(context.Context, string, store.NotificationFilter) (store.NotificationFilter, error)
+	DeleteNotificationFilter(context.Context, string, string) error
+}
 
 type enrollmentRequest struct {
 	InvitationToken string   `json:"invitationToken"`
@@ -160,14 +165,41 @@ type forwardedNotificationRequest struct {
 	PostedAt      time.Time `json:"postedAt"`
 }
 type forwardedNotificationResponse struct {
-	ID            string    `json:"id"`
-	SourcePackage string    `json:"sourcePackage"`
-	SourceAppName string    `json:"sourceAppName"`
-	Title         string    `json:"title"`
-	Body          string    `json:"body"`
-	PostedAt      time.Time `json:"postedAt"`
-	CreatedAt     time.Time `json:"createdAt"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+	ID               string    `json:"id"`
+	SourceDeviceID   string    `json:"sourceDeviceId"`
+	SourceDeviceName string    `json:"sourceDeviceName"`
+	SourcePackage    string    `json:"sourcePackage"`
+	SourceAppName    string    `json:"sourceAppName"`
+	Title            string    `json:"title"`
+	Body             string    `json:"body"`
+	PostedAt         time.Time `json:"postedAt"`
+	CreatedAt        time.Time `json:"createdAt"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+}
+type notificationFilterRequest struct {
+	SourceDeviceID   string `json:"sourceDeviceId"`
+	SourceDeviceName string `json:"sourceDeviceName"`
+	SourcePackage    string `json:"sourcePackage"`
+	SourceAppName    string `json:"sourceAppName"`
+	TitlePattern     string `json:"titlePattern"`
+	TitleMatch       string `json:"titleMatch"`
+	MessagePattern   string `json:"messagePattern"`
+	MessageMatch     string `json:"messageMatch"`
+	Enabled          bool   `json:"enabled"`
+}
+type notificationFilterResponse struct {
+	ID               string    `json:"id"`
+	SourceDeviceID   string    `json:"sourceDeviceId"`
+	SourceDeviceName string    `json:"sourceDeviceName"`
+	SourcePackage    string    `json:"sourcePackage"`
+	SourceAppName    string    `json:"sourceAppName"`
+	TitlePattern     string    `json:"titlePattern"`
+	TitleMatch       string    `json:"titleMatch"`
+	MessagePattern   string    `json:"messagePattern"`
+	MessageMatch     string    `json:"messageMatch"`
+	Enabled          bool      `json:"enabled"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 const maxImageBytes = 10 * 1024 * 1024
@@ -213,11 +245,80 @@ func newHandler(enroller Enroller, events *eventHub, sender ...WakeupSender) htt
 		mux.HandleFunc("GET /v1/forwarded-notifications/pending", authenticate(authenticator, handlePendingForwardedNotifications(notifications)))
 		mux.HandleFunc("POST /v1/forwarded-notifications/{notificationID}/ack", authenticate(authenticator, handleAcknowledgeForwardedNotification(notifications)))
 	}
+	if filters, ok := enroller.(NotificationFilterStore); ok && authenticated {
+		mux.HandleFunc("GET /v1/notification-filters", authenticate(authenticator, handleListNotificationFilters(filters)))
+		mux.HandleFunc("POST /v1/notification-filters", authenticate(authenticator, handleSaveNotificationFilter(filters, false)))
+		mux.HandleFunc("PUT /v1/notification-filters/{filterID}", authenticate(authenticator, handleSaveNotificationFilter(filters, true)))
+		mux.HandleFunc("DELETE /v1/notification-filters/{filterID}", authenticate(authenticator, handleDeleteNotificationFilter(filters)))
+	}
 	return securityHeaders(mux)
 }
 
 func forwardedNotificationResponseFrom(v store.ForwardedNotification) forwardedNotificationResponse {
-	return forwardedNotificationResponse{v.ID, v.SourcePackage, v.SourceAppName, v.Title, v.Body, v.PostedAt, v.CreatedAt, v.ExpiresAt}
+	return forwardedNotificationResponse{v.ID, v.SourceDeviceID, v.SourceDeviceName, v.SourcePackage, v.SourceAppName, v.Title, v.Body, v.PostedAt, v.CreatedAt, v.ExpiresAt}
+}
+
+func notificationFilterResponseFrom(v store.NotificationFilter) notificationFilterResponse {
+	return notificationFilterResponse{v.ID, v.SourceDeviceID, v.SourceDeviceName, v.SourcePackage, v.SourceAppName, v.TitlePattern, v.TitleMatch, v.MessagePattern, v.MessageMatch, v.Enabled, v.CreatedAt, v.UpdatedAt}
+}
+func handleListNotificationFilters(filters NotificationFilterStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		items, err := filters.ListNotificationFilters(r.Context(), deviceID)
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		out := struct {
+			Filters []notificationFilterResponse `json:"filters"`
+		}{Filters: make([]notificationFilterResponse, 0, len(items))}
+		for _, v := range items {
+			out.Filters = append(out.Filters, notificationFilterResponseFrom(v))
+		}
+		writeJSON(w, 200, out)
+	}
+}
+func handleSaveNotificationFilter(filters NotificationFilterStore, updating bool) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		var body notificationFilterRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+		d.DisallowUnknownFields()
+		if d.Decode(&body) != nil || utf8.RuneCountInString(body.SourceDeviceID) > 128 || utf8.RuneCountInString(body.SourceDeviceName) > 120 || utf8.RuneCountInString(body.SourcePackage) > 255 || utf8.RuneCountInString(body.SourceAppName) > 120 || utf8.RuneCountInString(body.TitlePattern) > 500 || utf8.RuneCountInString(body.MessagePattern) > 500 || (body.TitleMatch != "CONTAINS" && body.TitleMatch != "EXACT") || (body.MessageMatch != "CONTAINS" && body.MessageMatch != "EXACT") || (strings.TrimSpace(body.SourceDeviceID) == "" && strings.TrimSpace(body.SourcePackage) == "" && strings.TrimSpace(body.TitlePattern) == "" && strings.TrimSpace(body.MessagePattern) == "") {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		id := ""
+		if updating {
+			id = r.PathValue("filterID")
+		}
+		v, err := filters.SaveNotificationFilter(r.Context(), deviceID, store.NotificationFilter{ID: id, SourceDeviceID: body.SourceDeviceID, SourceDeviceName: body.SourceDeviceName, SourcePackage: body.SourcePackage, SourceAppName: body.SourceAppName, TitlePattern: body.TitlePattern, TitleMatch: body.TitleMatch, MessagePattern: body.MessagePattern, MessageMatch: body.MessageMatch, Enabled: body.Enabled})
+		if errors.Is(err, store.ErrNotificationFilterNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		status := 201
+		if updating {
+			status = 200
+		}
+		writeJSON(w, status, notificationFilterResponseFrom(v))
+	}
+}
+func handleDeleteNotificationFilter(filters NotificationFilterStore) authenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		err := filters.DeleteNotificationFilter(r.Context(), deviceID, r.PathValue("filterID"))
+		if errors.Is(err, store.ErrNotificationFilterNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		w.WriteHeader(204)
+	}
 }
 
 func handleForwardedNotification(notifications ForwardedNotificationStore, events *eventHub, sender ...WakeupSender) authenticatedHandler {

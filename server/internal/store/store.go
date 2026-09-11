@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kowerkoint/partner-watch/server/internal/secret"
+	"golang.org/x/text/unicode/norm"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,6 +26,7 @@ var ErrStatusRequestNotFound = errors.New("status request not found")
 var ErrStatusSnapshotNotFound = errors.New("status snapshot not found")
 var ErrPairNotFound = errors.New("pair not found")
 var ErrForwardedNotificationNotFound = errors.New("forwarded notification not found")
+var ErrNotificationFilterNotFound = errors.New("notification filter not found")
 
 type Store struct {
 	db      *sql.DB
@@ -127,8 +129,16 @@ type StatusSnapshot struct {
 }
 
 type ForwardedNotification struct {
-	ID, PairID, SourceDeviceID, SourcePackage, SourceAppName, Title, Body string
-	PostedAt, CreatedAt, ExpiresAt                                        time.Time
+	ID, PairID, SourceDeviceID, SourceDeviceName, SourcePackage, SourceAppName, Title, Body string
+	PostedAt, CreatedAt, ExpiresAt                                                          time.Time
+}
+
+type NotificationFilter struct {
+	ID, PairID, SourceDeviceID, SourceDeviceName, SourcePackage, SourceAppName string
+	TitlePattern, TitleMatch, MessagePattern, MessageMatch                     string
+	OwnerSlot                                                                  int
+	Enabled                                                                    bool
+	CreatedAt, UpdatedAt                                                       time.Time
 }
 
 const schema = `
@@ -263,6 +273,24 @@ CREATE TABLE IF NOT EXISTS forwarded_notification_deliveries (
     PRIMARY KEY (notification_id, device_id)
 );
 CREATE INDEX IF NOT EXISTS forwarded_notification_deliveries_device_idx ON forwarded_notification_deliveries(device_id, delivered_at);
+
+CREATE TABLE IF NOT EXISTS notification_filters (
+    id TEXT PRIMARY KEY,
+    pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+    owner_slot INTEGER NOT NULL CHECK (owner_slot IN (1, 2)),
+    source_device_id TEXT NOT NULL DEFAULT '',
+    source_device_name TEXT NOT NULL DEFAULT '',
+    source_package TEXT NOT NULL DEFAULT '',
+    source_app_name TEXT NOT NULL DEFAULT '',
+    title_pattern TEXT NOT NULL DEFAULT '',
+    title_match TEXT NOT NULL DEFAULT 'CONTAINS' CHECK (title_match IN ('CONTAINS','EXACT')),
+    message_pattern TEXT NOT NULL DEFAULT '',
+    message_match TEXT NOT NULL DEFAULT 'CONTAINS' CHECK (message_match IN ('CONTAINS','EXACT')),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notification_filters_owner_idx ON notification_filters(pair_id, owner_slot, created_at);
 `
 
 func Open(dataDir string) (*Store, error) {
@@ -805,9 +833,9 @@ func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var pairID string
+	var pairID, sourceDeviceName string
 	var sourceSlot int
-	if err := tx.QueryRowContext(ctx, `SELECT pair_id, slot FROM devices WHERE id=?`, sourceDeviceID).Scan(&pairID, &sourceSlot); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT pair_id, slot, name FROM devices WHERE id=?`, sourceDeviceID).Scan(&pairID, &sourceSlot, &sourceDeviceName); errors.Is(err, sql.ErrNoRows) {
 		return ForwardedNotification{}, nil, ErrUnauthorized
 	} else if err != nil {
 		return ForwardedNotification{}, nil, fmt.Errorf("find notification source: %w", err)
@@ -831,6 +859,10 @@ func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID 
 	if len(targets) == 0 {
 		return ForwardedNotification{}, nil, ErrPartnerNotFound
 	}
+	blocked, err := notificationBlockedTx(ctx, tx, pairID, 3-sourceSlot, sourceDeviceID, item)
+	if err != nil {
+		return ForwardedNotification{}, nil, err
+	}
 	var recent, hourly int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN created_at>? THEN 1 END), COUNT(*) FROM forwarded_notifications WHERE source_device_id=? AND created_at>?`, now.Add(-10*time.Second).Unix(), sourceDeviceID, now.Add(-time.Hour).Unix()).Scan(&recent, &hourly); err != nil {
 		return ForwardedNotification{}, nil, fmt.Errorf("count forwarded notifications: %w", err)
@@ -842,8 +874,14 @@ func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID 
 	if err != nil {
 		return ForwardedNotification{}, nil, err
 	}
-	item.ID, item.PairID, item.SourceDeviceID = id, pairID, sourceDeviceID
+	item.ID, item.PairID, item.SourceDeviceID, item.SourceDeviceName = id, pairID, sourceDeviceID, sourceDeviceName
 	item.CreatedAt, item.ExpiresAt = now, now.Add(time.Hour)
+	if blocked {
+		if err := tx.Commit(); err != nil {
+			return ForwardedNotification{}, nil, fmt.Errorf("commit filtered notification: %w", err)
+		}
+		return item, []string{}, nil
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO forwarded_notifications(id,pair_id,source_device_id,source_package,source_app_name,title,body,posted_at,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, item.ID, item.PairID, item.SourceDeviceID, item.SourcePackage, item.SourceAppName, item.Title, item.Body, item.PostedAt.UTC().Unix(), item.CreatedAt.Unix(), item.ExpiresAt.Unix()); err != nil {
 		return ForwardedNotification{}, nil, fmt.Errorf("insert forwarded notification: %w", err)
 	}
@@ -862,7 +900,7 @@ func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID 
 }
 
 func (s *Store) PendingForwardedNotifications(ctx context.Context, deviceID string) ([]ForwardedNotification, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT n.id,n.pair_id,n.source_device_id,n.source_package,n.source_app_name,n.title,n.body,n.posted_at,n.created_at,n.expires_at FROM forwarded_notifications n JOIN forwarded_notification_deliveries d ON d.notification_id=n.id WHERE d.device_id=? AND d.delivered_at IS NULL AND n.expires_at>? ORDER BY n.created_at`, deviceID, s.now().UTC().Unix())
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id,n.pair_id,n.source_device_id,COALESCE(sd.name,''),n.source_package,n.source_app_name,n.title,n.body,n.posted_at,n.created_at,n.expires_at FROM forwarded_notifications n JOIN forwarded_notification_deliveries d ON d.notification_id=n.id LEFT JOIN devices sd ON sd.id=n.source_device_id WHERE d.device_id=? AND d.delivered_at IS NULL AND n.expires_at>? ORDER BY n.created_at`, deviceID, s.now().UTC().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("list forwarded notifications: %w", err)
 	}
@@ -871,13 +909,166 @@ func (s *Store) PendingForwardedNotifications(ctx context.Context, deviceID stri
 	for rows.Next() {
 		var item ForwardedNotification
 		var posted, created, expires int64
-		if err := rows.Scan(&item.ID, &item.PairID, &item.SourceDeviceID, &item.SourcePackage, &item.SourceAppName, &item.Title, &item.Body, &posted, &created, &expires); err != nil {
+		if err := rows.Scan(&item.ID, &item.PairID, &item.SourceDeviceID, &item.SourceDeviceName, &item.SourcePackage, &item.SourceAppName, &item.Title, &item.Body, &posted, &created, &expires); err != nil {
 			return nil, err
 		}
 		item.PostedAt, item.CreatedAt, item.ExpiresAt = time.Unix(posted, 0).UTC(), time.Unix(created, 0).UTC(), time.Unix(expires, 0).UTC()
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func normalizedNotificationText(value string) string { return strings.ToLower(norm.NFKC.String(value)) }
+func notificationTextMatches(value, pattern, mode string) bool {
+	value, pattern = normalizedNotificationText(value), normalizedNotificationText(pattern)
+	if mode == "EXACT" {
+		return value == pattern
+	}
+	return strings.Contains(value, pattern)
+}
+
+func notificationBlockedTx(ctx context.Context, tx *sql.Tx, pairID string, ownerSlot int, sourceDeviceID string, item ForwardedNotification) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT source_device_id,source_package,title_pattern,title_match,message_pattern,message_match FROM notification_filters WHERE pair_id=? AND owner_slot=? AND enabled=1`, pairID, ownerSlot)
+	if err != nil {
+		return false, fmt.Errorf("list notification filters: %w", err)
+	}
+	defer rows.Close()
+	message := item.Title + "\n" + item.Body
+	for rows.Next() {
+		var device, pkg, titlePattern, titleMatch, messagePattern, messageMatch string
+		if err := rows.Scan(&device, &pkg, &titlePattern, &titleMatch, &messagePattern, &messageMatch); err != nil {
+			return false, err
+		}
+		if device != "" && device != sourceDeviceID {
+			continue
+		}
+		if pkg != "" && pkg != item.SourcePackage {
+			continue
+		}
+		if titlePattern != "" && !notificationTextMatches(item.Title, titlePattern, titleMatch) {
+			continue
+		}
+		if messagePattern != "" && !notificationTextMatches(message, messagePattern, messageMatch) {
+			continue
+		}
+		return true, nil
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) ListNotificationFilters(ctx context.Context, deviceID string) ([]NotificationFilter, error) {
+	pairID, slot, err := s.devicePairSlot(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,pair_id,owner_slot,source_device_id,source_device_name,source_package,source_app_name,title_pattern,title_match,message_pattern,message_match,enabled,created_at,updated_at FROM notification_filters WHERE pair_id=? AND owner_slot=? ORDER BY created_at`, pairID, slot)
+	if err != nil {
+		return nil, fmt.Errorf("list notification filters: %w", err)
+	}
+	defer rows.Close()
+	var result []NotificationFilter
+	for rows.Next() {
+		var v NotificationFilter
+		var enabled int
+		var created, updated int64
+		if err := rows.Scan(&v.ID, &v.PairID, &v.OwnerSlot, &v.SourceDeviceID, &v.SourceDeviceName, &v.SourcePackage, &v.SourceAppName, &v.TitlePattern, &v.TitleMatch, &v.MessagePattern, &v.MessageMatch, &enabled, &created, &updated); err != nil {
+			return nil, err
+		}
+		v.Enabled = enabled != 0
+		v.CreatedAt = time.Unix(created, 0).UTC()
+		v.UpdatedAt = time.Unix(updated, 0).UTC()
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) SaveNotificationFilter(ctx context.Context, deviceID string, value NotificationFilter) (NotificationFilter, error) {
+	pairID, slot, err := s.devicePairSlot(ctx, deviceID)
+	if err != nil {
+		return NotificationFilter{}, err
+	}
+	value.SourceDeviceID = strings.TrimSpace(value.SourceDeviceID)
+	value.SourceDeviceName = strings.TrimSpace(value.SourceDeviceName)
+	value.SourcePackage = strings.TrimSpace(value.SourcePackage)
+	value.SourceAppName = strings.TrimSpace(value.SourceAppName)
+	value.TitlePattern, value.MessagePattern = strings.TrimSpace(value.TitlePattern), strings.TrimSpace(value.MessagePattern)
+	if value.TitleMatch == "" {
+		value.TitleMatch = "CONTAINS"
+	}
+	if value.MessageMatch == "" {
+		value.MessageMatch = "CONTAINS"
+	}
+	if (value.TitleMatch != "CONTAINS" && value.TitleMatch != "EXACT") || (value.MessageMatch != "CONTAINS" && value.MessageMatch != "EXACT") {
+		return NotificationFilter{}, errors.New("invalid notification match mode")
+	}
+	if value.SourceDeviceID == "" && value.SourcePackage == "" && value.TitlePattern == "" && value.MessagePattern == "" {
+		return NotificationFilter{}, errors.New("notification filter requires a condition")
+	}
+	if value.SourceDeviceID != "" {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE id=? AND pair_id=? AND slot<>? AND revoked_at IS NULL`, value.SourceDeviceID, pairID, slot).Scan(&count); err != nil {
+			return NotificationFilter{}, err
+		}
+		if count != 1 {
+			return NotificationFilter{}, ErrNotificationFilterNotFound
+		}
+	}
+	now := s.now().UTC()
+	value.PairID = pairID
+	value.OwnerSlot = slot
+	value.UpdatedAt = now
+	if value.ID == "" {
+		value.ID, err = secret.Generate(16)
+		if err != nil {
+			return NotificationFilter{}, err
+		}
+		value.CreatedAt = now
+		_, err = s.db.ExecContext(ctx, `INSERT INTO notification_filters(id,pair_id,owner_slot,source_device_id,source_device_name,source_package,source_app_name,title_pattern,title_match,message_pattern,message_match,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, value.ID, pairID, slot, value.SourceDeviceID, value.SourceDeviceName, value.SourcePackage, value.SourceAppName, value.TitlePattern, value.TitleMatch, value.MessagePattern, value.MessageMatch, boolInt(value.Enabled), now.Unix(), now.Unix())
+	} else {
+		var created int64
+		err = s.db.QueryRowContext(ctx, `SELECT created_at FROM notification_filters WHERE id=? AND pair_id=? AND owner_slot=?`, value.ID, pairID, slot).Scan(&created)
+		if errors.Is(err, sql.ErrNoRows) {
+			return NotificationFilter{}, ErrNotificationFilterNotFound
+		}
+		if err == nil {
+			value.CreatedAt = time.Unix(created, 0).UTC()
+			_, err = s.db.ExecContext(ctx, `UPDATE notification_filters SET source_device_id=?,source_device_name=?,source_package=?,source_app_name=?,title_pattern=?,title_match=?,message_pattern=?,message_match=?,enabled=?,updated_at=? WHERE id=? AND pair_id=? AND owner_slot=?`, value.SourceDeviceID, value.SourceDeviceName, value.SourcePackage, value.SourceAppName, value.TitlePattern, value.TitleMatch, value.MessagePattern, value.MessageMatch, boolInt(value.Enabled), now.Unix(), value.ID, pairID, slot)
+		}
+	}
+	if err != nil {
+		return NotificationFilter{}, fmt.Errorf("save notification filter: %w", err)
+	}
+	return value, nil
+}
+
+func (s *Store) DeleteNotificationFilter(ctx context.Context, deviceID, filterID string) error {
+	pairID, slot, err := s.devicePairSlot(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM notification_filters WHERE id=? AND pair_id=? AND owner_slot=?`, filterID, pairID, slot)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrNotificationFilterNotFound
+	}
+	return nil
+}
+func (s *Store) devicePairSlot(ctx context.Context, deviceID string) (string, int, error) {
+	var pair string
+	var slot int
+	err := s.db.QueryRowContext(ctx, `SELECT pair_id,slot FROM devices WHERE id=? AND revoked_at IS NULL`, deviceID).Scan(&pair, &slot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, ErrUnauthorized
+	}
+	return pair, slot, err
+}
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) AcknowledgeForwardedNotification(ctx context.Context, deviceID, notificationID string) error {
