@@ -75,7 +75,6 @@ class MainActivity : ComponentActivity() {
                     onRequestCapture = viewModel::requestCapture,
                     onSavePhoto = viewModel::saveReceivedPhoto,
                     onLogout = viewModel::logout,
-                    onDisconnectForTest = viewModel::disconnectForTest,
                     onConnectionModeChanged = viewModel::setConnectionMode,
                     onBatterySharingChanged = viewModel::setBatterySharing,
                     onRequestPartnerStatus = viewModel::requestPartnerStatus,

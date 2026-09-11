@@ -243,12 +243,6 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun disconnectForTest() {
-        getApplication<Application>().stopService(
-            android.content.Intent(getApplication(), com.kowerkoint.partnerwatch.connection.PartnerConnectionService::class.java),
-        )
-    }
-
     fun setConnectionMode(mode: ConnectionMode) {
         viewModelScope.launch { connectionPreferences.setMode(mode) }
     }

@@ -34,7 +34,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
-import com.kowerkoint.partnerwatch.BuildConfig
 import com.kowerkoint.partnerwatch.connection.ConnectionMode
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,7 +49,6 @@ fun EnrollmentScreen(
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
-    onDisconnectForTest: () -> Unit,
     onConnectionModeChanged: (ConnectionMode) -> Unit,
     onBatterySharingChanged: (Boolean) -> Unit,
     onRequestPartnerStatus: () -> Unit,
@@ -81,7 +79,6 @@ fun EnrollmentScreen(
                 onRequestCapture = onRequestCapture,
                 onSavePhoto = onSavePhoto,
                 onLogout = onLogout,
-                onDisconnectForTest = onDisconnectForTest,
                 onConnectionModeChanged = onConnectionModeChanged,
                 onBatterySharingChanged = onBatterySharingChanged,
                 onRequestPartnerStatus = onRequestPartnerStatus,
@@ -181,7 +178,6 @@ private fun RegisteredContent(
     onRequestCapture: () -> Unit,
     onSavePhoto: () -> Unit,
     onLogout: () -> Unit,
-    onDisconnectForTest: () -> Unit,
     onConnectionModeChanged: (ConnectionMode) -> Unit,
     onBatterySharingChanged: (Boolean) -> Unit,
     onRequestPartnerStatus: () -> Unit,
@@ -356,11 +352,6 @@ private fun RegisteredContent(
         OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
             Text("この端末の登録を解除")
         }
-        if (BuildConfig.DEBUG) {
-            OutlinedButton(onClick = onDisconnectForTest, modifier = Modifier.fillMaxWidth()) {
-                Text("[テスト] WebSocket接続を切断")
-            }
-        }
     }
 }
 
@@ -387,7 +378,6 @@ private fun EnrollmentFormPreview() {
             onRequestCapture = {},
             onSavePhoto = {},
             onLogout = {},
-            onDisconnectForTest = {},
             onConnectionModeChanged = {},
             onBatterySharingChanged = {},
             onRequestPartnerStatus = {},
