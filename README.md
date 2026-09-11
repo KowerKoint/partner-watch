@@ -5,6 +5,7 @@
 ## リポジトリ構成
 
 - `android/`: Android 16以上向けKotlinアプリ
+- `desktop/`: Linux向けGoクライアント（通信コアは将来のWindowsと共用）
 - `server/`: Go APIサーバーと管理CLI
 - `deploy/`: Docker Composeなどの運用設定
 - `docs/`: 技術設計、決定ログ、API仕様
@@ -64,6 +65,25 @@ nix develop -c avdmanager create avd \
   --device pixel_6
 nix develop -c avdmanager list avd
 ```
+
+### Linuxデスクトップ
+
+初期対応環境はNixOS・niri/Wayland・swayncである。
+
+```sh
+cd desktop
+nix develop
+go build ./cmd/partner-watch-desktop
+```
+
+`config.example.toml`を`~/.config/partner-watch/config.toml`へコピーして編集し、管理CLIで発行した追加端末招待コードを使って登録する。
+
+```sh
+partner-watch-desktop enroll
+partner-watch-desktop run
+```
+
+資格情報は`~/.local/state/partner-watch/state.json`へパーミッション`0600`で保存される。通知転送は設定の`forward_notifications = true`で明示的に有効化する。
 
 ## 本番運用
 

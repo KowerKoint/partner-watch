@@ -1,0 +1,4 @@
+server_url = "https://example.com"
+device_name = "My Linux PC"
+accept_captures = false
+forward_notifications = false

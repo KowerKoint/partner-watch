@@ -9,6 +9,7 @@ local.properties
 # Go
 server/bin/
 server/coverage.out
+/desktop/partner-watch-desktop
 
 # Runtime data and secrets
 .env
