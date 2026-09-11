@@ -118,7 +118,15 @@ systemctl --user status partner-watch-desktop.service
 
 `deploy/compose.yaml`はアプリケーションサーバーだけを起動する。TLSはホストですでに稼働しているCaddyが終端し、コンテナのループバック公開ポートへ転送する。
 
-最初に`deploy/.env.example`を`deploy/.env`へコピーし、`PW_PUBLIC_URL`を実際のHTTPS公開URLへ変更する。実際の`.env`はGit管理対象外である。
+最初に`deploy/.env.example`を`deploy/.env`へコピーし、`PW_PUBLIC_URL`を実際のHTTPS公開URLへ変更する。`PW_HOST_PORT`はCaddyが接続するホスト側ポートで、未指定時は`18080`となる。実際の`.env`はGit管理対象外である。
+
+本番とテストを同じホストで動かす場合は、別の環境ファイル、ホスト側ポート、Composeプロジェクト名を使用する。たとえばテスト用の`deploy/.env.test`では`PW_HOST_PORT=18090`を指定し、次のように起動する。
+
+```console
+docker compose --project-name partner-watch-test --env-file deploy/.env.test -f deploy/compose.yaml up -d --build
+```
+
+Composeプロジェクト名を分けることでコンテナと名前付きデータボリュームも本番から分離される。
 
 Docker Compose環境で招待コードを発行する場合は、サーバーと同じ永続ボリュームを使って管理CLIを実行する。
 
