@@ -31,8 +31,17 @@ type fakeImageBackend struct {
 
 type fakeCaptureBackend struct {
 	fakeEnroller
-	created   store.CaptureRequest
-	completed store.CaptureRequest
+	created     store.CaptureRequest
+	createdMany []store.CaptureRequest
+	completed   store.CaptureRequest
+}
+
+func (f *fakeCaptureBackend) CreateCaptureRequests(_ context.Context, requester string) ([]store.CaptureRequest, error) {
+	result := append([]store.CaptureRequest(nil), f.createdMany...)
+	for index := range result {
+		result[index].RequesterDeviceID = requester
+	}
+	return result, nil
 }
 
 func (f *fakeCaptureBackend) AuthenticateDevice(_ context.Context, credential string) (string, error) {
@@ -259,6 +268,35 @@ func TestCaptureRequestIsDeliveredOverWebSocket(t *testing.T) {
 	}
 	if event.Type != "capture.requested" || event.RequestID != "request-id" {
 		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestCaptureRequestFansOutWithoutADeviceSelector(t *testing.T) {
+	hub := newEventHub()
+	backend := &fakeCaptureBackend{createdMany: []store.CaptureRequest{
+		{ID: "android-request", TargetDeviceID: "android", TargetDeviceName: "Pixel", TargetPlatform: "ANDROID", Status: "PENDING", ExpiresAt: time.Unix(61, 0).UTC()},
+		{ID: "linux-request", TargetDeviceID: "linux", TargetDeviceName: "niri PC", TargetPlatform: "LINUX", Status: "PENDING", ExpiresAt: time.Unix(61, 0).UTC()},
+	}}
+	androidEvents, unsubscribeAndroid := hub.subscribe("android")
+	defer unsubscribeAndroid()
+	linuxEvents, unsubscribeLinux := hub.subscribe("linux")
+	defer unsubscribeLinux()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/capture-requests", strings.NewReader(`{"allDevices":true}`))
+	request.Header.Set("Authorization", "Bearer requester-token")
+	response := httptest.NewRecorder()
+	newHandler(backend, hub).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("capture status = %d; body = %s", response.Code, response.Body.String())
+	}
+	if event := <-androidEvents; event.RequestID != "android-request" {
+		t.Fatalf("android event = %+v", event)
+	}
+	if event := <-linuxEvents; event.RequestID != "linux-request" {
+		t.Fatalf("linux event = %+v", event)
+	}
+	if !strings.Contains(response.Body.String(), `"targetDeviceName":"niri PC"`) {
+		t.Fatalf("response = %s", response.Body.String())
 	}
 }
 

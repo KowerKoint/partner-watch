@@ -97,7 +97,7 @@ Foreground Serviceは実行中であることを示す常時通知を表示す�
 
 Androidの撮影処理は、受付設定の確認、`takeScreenshot()`、JPEG変換、`POST /v1/images`の順に実行する。OSがセキュアウィンドウとして拒否した場合は`CAPTURE_PROTECTED`、Accessibility権限が失われた場合は`SERVICE_UNAVAILABLE`へ分類する。要求配送との接続時には、この処理の前後で要求IDの重複排除と結果報告を追加する。
 
-要求元は`POST /v1/capture-requests`で要求を作成する。サーバーはSQLiteへ要求と1分後の失効時刻を記録し、対象端末の`GET /v1/events` WebSocketへ`capture.requested`を送る。対象端末は画像をアップロードした後、または撮影できなかった時点で`POST /v1/capture-requests/{requestId}/result`へ結果を返す。サーバーは対象端末IDと未完了・期限内であることを検証し、要求元へ`capture.completed`を送る。
+要求元は`POST /v1/capture-requests`へ`allDevices`を指定して要求を作成する。サーバーは相手側の`capture`能力を持つ全端末について個別の要求と1分後の失効時刻をSQLiteへ記録し、各端末の`GET /v1/events` WebSocketへ`capture.requested`を送る。この展開全体をレート制限上の1操作として数える。対象端末は画像をアップロードした後、または撮影できなかった時点で`POST /v1/capture-requests/{requestId}/result`へ結果を返す。Linuxなどの複数画面端末は`images`配列で画面名と画像IDを返せる。サーバーは対象端末IDと未完了・期限内であることを検証し、要求元へ`capture.completed`を送る。旧Androidとの互換用に、本文なしの要求は相手Android 1台だけを対象とする。
 
 WebSocket接続は端末資格情報をBearer認証し、端末IDごとにメモリ上の接続ハブへ登録する。画像本体はWebSocketへ載せない。AndroidのOkHttpには`https` URLを渡してWebSocket Upgradeを行う（`wss`スキームを直接渡さない）。期限切れ要求は5秒間隔のサーバー処理で`TIMEOUT`へ確定し、監査履歴へ記録する。サーバー再起動や接続切断をまたぐ再取得用APIはAndroid常駐接続と合わせて追加する。
 

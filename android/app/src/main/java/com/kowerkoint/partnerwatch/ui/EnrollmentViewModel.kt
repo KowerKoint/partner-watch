@@ -14,8 +14,6 @@ import com.kowerkoint.partnerwatch.data.EnrollmentStore
 import com.kowerkoint.partnerwatch.data.SavedEnrollment
 import com.kowerkoint.partnerwatch.capture.CapturePreferences
 import com.kowerkoint.partnerwatch.capture.PartnerAccessibilityService
-import com.kowerkoint.partnerwatch.connection.CaptureEventBus
-import com.kowerkoint.partnerwatch.connection.CaptureCompletedEvent
 import com.kowerkoint.partnerwatch.connection.ConnectionStatus
 import com.kowerkoint.partnerwatch.connection.ConnectionStatusBus
 import com.kowerkoint.partnerwatch.connection.FcmTokenRegistrar
@@ -74,10 +72,11 @@ sealed interface BatteryUiState { data object Idle:BatteryUiState; data object L
 
 sealed interface CaptureUiState {
     data object Idle : CaptureUiState
-    data class Waiting(val requestId: String) : CaptureUiState
-    data class Received(val jpeg: ByteArray, val savedMessage: String? = null) : CaptureUiState
+    data class Waiting(val requestIds: Set<String>) : CaptureUiState
+    data class Received(val images: List<ReceivedCaptureImage>, val failures: List<String>, val savedMessage: String? = null) : CaptureUiState
     data class Error(val message: String) : CaptureUiState
 }
+data class ReceivedCaptureImage(val deviceName: String, val displayName: String, val jpeg: ByteArray)
 
 class EnrollmentViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = EnrollmentRepository(
@@ -101,21 +100,10 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
     private val captureState = MutableStateFlow<CaptureUiState>(CaptureUiState.Idle)
     private var timeoutJob: Job? = null
     private var registeredObservationJob: Job? = null
-    private val earlyResults = mutableMapOf<String, CaptureCompletedEvent>()
     private val mutableState = MutableStateFlow<EnrollmentUiState>(EnrollmentUiState.Loading)
     val state: StateFlow<EnrollmentUiState> = mutableState.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            CaptureEventBus.events.collect { event ->
-                val waiting = captureState.value as? CaptureUiState.Waiting
-                if (waiting?.requestId == event.requestId) applyCompletedEvent(event)
-                else {
-                    earlyResults[event.requestId] = event
-                    while (earlyResults.size > 16) earlyResults.remove(earlyResults.keys.first())
-                }
-            }
-        }
         viewModelScope.launch { StatusEventBus.events.collect { refreshPartnerBattery() } }
         viewModelScope.launch {
             val enrollment = repository.load()
@@ -189,25 +177,37 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         if (captureState.value is CaptureUiState.Waiting) return
         viewModelScope.launch {
             try {
-                val created = captureApi.create(sessions.load())
-                captureState.value = CaptureUiState.Waiting(created.requestId)
-                earlyResults.remove(created.requestId)?.let {
-                    applyCompletedEvent(it)
-                    return@launch
-                }
+                val session = sessions.load()
+                val created = captureApi.create(session)
+                val pending = created.associateBy { it.requestId }.toMutableMap()
+                val received = mutableListOf<ReceivedCaptureImage>()
+                val failures = mutableListOf<String>()
+                captureState.value = CaptureUiState.Waiting(pending.keys)
                 timeoutJob?.cancel()
                 timeoutJob = viewModelScope.launch {
-                    val session=sessions.load()
-                    while (System.currentTimeMillis() <= created.expiresAt.toEpochMilli()+1_000 && (captureState.value as? CaptureUiState.Waiting)?.requestId==created.requestId) {
+                    val deadline = created.maxOf { it.expiresAt.toEpochMilli() } + 1_000
+                    while (System.currentTimeMillis() <= deadline && pending.isNotEmpty()) {
                         delay(1_000)
-                        val result=runCatching{captureApi.status(session,created.requestId)}.getOrNull()?:continue
-                        if(result.status!="PENDING"){
-                            timeoutJob=null;applyCompletedEvent(CaptureCompletedEvent(result.requestId,result.status,result.imageId,result.failure));return@launch
+                        for ((requestId, target) in pending.toMap()) {
+                            val result = runCatching { captureApi.status(session, requestId) }.getOrNull() ?: continue
+                            if (result.status == "PENDING") continue
+                            pending.remove(requestId)
+                            if (result.status == "READY") {
+                                for (image in result.images) {
+                                    runCatching { images.download(image.imageId) }
+                                        .onSuccess { received += ReceivedCaptureImage(target.targetDeviceName, image.displayName, it) }
+                                        .onFailure { failures += "${target.targetDeviceName}: 画像を取得できませんでした" }
+                                }
+                            } else {
+                                failures += "${target.targetDeviceName}: ${failureMessage(result.failure)}"
+                            }
+                            captureState.value = CaptureUiState.Waiting(pending.keys)
                         }
                     }
-                    if ((captureState.value as? CaptureUiState.Waiting)?.requestId == created.requestId) {
-                        captureState.value = CaptureUiState.Error("撮影要求がタイムアウトしました")
-                    }
+                    for (target in pending.values) failures += "${target.targetDeviceName}: 撮影要求がタイムアウトしました"
+                    timeoutJob = null
+                    captureState.value = if (received.isNotEmpty()) CaptureUiState.Received(received, failures)
+                    else CaptureUiState.Error(failures.joinToString("\n").ifBlank { "撮影に失敗しました" })
                 }
             } catch (error: CaptureRequestException) {
                 captureState.value = CaptureUiState.Error(error.message ?: "撮影を要求できませんでした")
@@ -221,8 +221,8 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         val received = captureState.value as? CaptureUiState.Received ?: return
         viewModelScope.launch {
             try {
-                photos.save(received.jpeg)
-                captureState.value = received.copy(savedMessage = "写真コレクションへ保存しました")
+                received.images.forEach { photos.save(it.jpeg) }
+                captureState.value = received.copy(savedMessage = "${received.images.size}枚を写真コレクションへ保存しました")
             } catch (_: Exception) {
                 captureState.value = received.copy(savedMessage = "写真を保存できませんでした")
             }
@@ -279,16 +279,6 @@ class EnrollmentViewModel(application: Application) : AndroidViewModel(applicati
         "CAPTURE_PROTECTED" -> "保護された画面のため撮影できません"
         "TIMEOUT" -> "撮影要求がタイムアウトしました"
         else -> "相手の端末で撮影に失敗しました"
-    }
-
-    private suspend fun applyCompletedEvent(event: CaptureCompletedEvent) {
-        timeoutJob?.cancel()
-        captureState.value = if (event.status == "READY" && event.imageId.isNotBlank()) {
-            try { CaptureUiState.Received(images.download(event.imageId)) }
-            catch (_: Exception) { CaptureUiState.Error("画像を取得できませんでした") }
-        } else {
-            CaptureUiState.Error(failureMessage(event.failure))
-        }
     }
 
     private fun updateForm(transform: EnrollmentForm.() -> EnrollmentForm) {

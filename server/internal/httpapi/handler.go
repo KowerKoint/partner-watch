@@ -55,6 +55,9 @@ type CaptureStore interface {
 	CreateCaptureRequest(ctx context.Context, requesterDeviceID string) (store.CaptureRequest, error)
 	CompleteCaptureRequest(ctx context.Context, targetDeviceID, requestID, status, imageID, failure string) (store.CaptureRequest, error)
 }
+type MultiCaptureStore interface {
+	CreateCaptureRequests(ctx context.Context, requesterDeviceID string) ([]store.CaptureRequest, error)
+}
 type CaptureReader interface {
 	CaptureRequestForRequester(context.Context, string, string) (store.CaptureRequest, error)
 }
@@ -100,10 +103,13 @@ type imageResponse struct {
 }
 
 type captureRequestResponse struct {
-	RequestID string    `json:"requestId"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"createdAt"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	RequestID        string    `json:"requestId"`
+	TargetDeviceID   string    `json:"targetDeviceId,omitempty"`
+	TargetDeviceName string    `json:"targetDeviceName,omitempty"`
+	TargetPlatform   string    `json:"targetPlatform,omitempty"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"createdAt"`
+	ExpiresAt        time.Time `json:"expiresAt"`
 }
 type pendingCaptureResponse struct {
 	Requests []captureRequestResponse `json:"requests"`
@@ -113,9 +119,14 @@ type fcmTokenRequest struct {
 	Token string `json:"token"`
 }
 type captureResultRequest struct {
-	Status  string `json:"status"`
-	ImageID string `json:"imageId"`
-	Failure string `json:"failure"`
+	Status  string               `json:"status"`
+	ImageID string               `json:"imageId"`
+	Images  []captureImageResult `json:"images,omitempty"`
+	Failure string               `json:"failure"`
+}
+type captureImageResult struct {
+	ImageID     string `json:"imageId"`
+	DisplayName string `json:"displayName"`
 }
 type batteryResultRequest struct {
 	Status        string `json:"status"`
@@ -160,7 +171,7 @@ type forwardedNotificationResponse struct {
 }
 
 const maxImageBytes = 10 * 1024 * 1024
-const maxImagePixels = 5_000_000
+const maxImagePixels = 16_000_000
 
 func NewHandler(enroller Enroller, sender ...WakeupSender) http.Handler {
 	return newHandler(enroller, newEventHub(), sender...)
@@ -397,12 +408,13 @@ func handleCaptureRequestStatus(reader CaptureReader) authenticatedHandler {
 			return
 		}
 		writeJSON(w, 200, struct {
-			RequestID string    `json:"requestId"`
-			Status    string    `json:"status"`
-			ImageID   string    `json:"imageId"`
-			Failure   string    `json:"failure"`
-			ExpiresAt time.Time `json:"expiresAt"`
-		}{v.ID, v.Status, v.ImageID, v.Failure, v.ExpiresAt})
+			RequestID string               `json:"requestId"`
+			Status    string               `json:"status"`
+			ImageID   string               `json:"imageId"`
+			Images    []store.CaptureImage `json:"images,omitempty"`
+			Failure   string               `json:"failure"`
+			ExpiresAt time.Time            `json:"expiresAt"`
+		}{v.ID, v.Status, v.ImageID, v.Images, v.Failure, v.ExpiresAt})
 	}
 }
 
@@ -472,30 +484,71 @@ func handleEvents(authenticator Authenticator, events *eventHub) http.HandlerFun
 
 func handleCaptureRequest(captures CaptureStore, events *eventHub, sender ...WakeupSender) authenticatedHandler {
 	return func(response http.ResponseWriter, request *http.Request, deviceID string) {
-		capture, err := captures.CreateCaptureRequest(request.Context(), deviceID)
-		if errors.Is(err, store.ErrPartnerNotFound) {
-			writeError(response, http.StatusConflict, "partner_unavailable")
-			return
+		var body struct {
+			AllDevices bool `json:"allDevices"`
 		}
-		if errors.Is(err, store.ErrRateLimited) {
-			writeError(response, http.StatusTooManyRequests, "rate_limited")
-			return
-		}
-		if err != nil {
-			writeError(response, http.StatusInternalServerError, "internal_error")
-			return
-		}
-		events.publish(capture.TargetDeviceID, deviceEvent{
-			Type: "capture.requested", RequestID: capture.ID, ExpiresAt: capture.ExpiresAt.Format(time.RFC3339),
-		})
-		if len(sender) > 0 && sender[0] != nil {
-			if err := sender[0].SendWakeup(request.Context(), capture.TargetDeviceID, capture.PairID); err != nil {
-				slog.Warn("FCM wakeup failed", "error", err)
+		if request.ContentLength != 0 {
+			request.Body = http.MaxBytesReader(response, request.Body, 1024)
+			decoder := json.NewDecoder(request.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil {
+				writeError(response, http.StatusBadRequest, "invalid_request")
+				return
 			}
 		}
-		writeJSON(response, http.StatusCreated, captureRequestResponse{
-			RequestID: capture.ID, Status: capture.Status, CreatedAt: capture.CreatedAt, ExpiresAt: capture.ExpiresAt,
-		})
+		if body.AllDevices {
+			multi, ok := captures.(MultiCaptureStore)
+			if !ok {
+				writeError(response, http.StatusInternalServerError, "internal_error")
+				return
+			}
+			created, err := multi.CreateCaptureRequests(request.Context(), deviceID)
+			if writeCaptureCreateError(response, err) {
+				return
+			}
+			result := pendingCaptureResponse{Requests: make([]captureRequestResponse, 0, len(created))}
+			for _, capture := range created {
+				publishCaptureRequest(request.Context(), capture, events, sender...)
+				result.Requests = append(result.Requests, captureResponse(capture))
+			}
+			writeJSON(response, http.StatusCreated, result)
+			return
+		}
+		capture, err := captures.CreateCaptureRequest(request.Context(), deviceID)
+		if writeCaptureCreateError(response, err) {
+			return
+		}
+		publishCaptureRequest(request.Context(), capture, events, sender...)
+		writeJSON(response, http.StatusCreated, captureResponse(capture))
+	}
+}
+
+func writeCaptureCreateError(response http.ResponseWriter, err error) bool {
+	if errors.Is(err, store.ErrPartnerNotFound) {
+		writeError(response, http.StatusConflict, "partner_unavailable")
+		return true
+	}
+	if errors.Is(err, store.ErrRateLimited) {
+		writeError(response, http.StatusTooManyRequests, "rate_limited")
+		return true
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "internal_error")
+		return true
+	}
+	return false
+}
+
+func captureResponse(capture store.CaptureRequest) captureRequestResponse {
+	return captureRequestResponse{RequestID: capture.ID, TargetDeviceID: capture.TargetDeviceID, TargetDeviceName: capture.TargetDeviceName, TargetPlatform: capture.TargetPlatform, Status: capture.Status, CreatedAt: capture.CreatedAt, ExpiresAt: capture.ExpiresAt}
+}
+
+func publishCaptureRequest(ctx context.Context, capture store.CaptureRequest, events *eventHub, sender ...WakeupSender) {
+	events.publish(capture.TargetDeviceID, deviceEvent{Type: "capture.requested", RequestID: capture.ID, ExpiresAt: capture.ExpiresAt.Format(time.RFC3339)})
+	if len(sender) > 0 && sender[0] != nil {
+		if err := sender[0].SendWakeup(ctx, capture.TargetDeviceID, capture.PairID); err != nil {
+			slog.Warn("FCM wakeup failed", "error", err, "target_device_id", capture.TargetDeviceID)
+		}
 	}
 }
 
@@ -531,9 +584,24 @@ func handleCaptureResult(captures CaptureStore, events *eventHub) authenticatedH
 			writeError(response, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		capture, err := captures.CompleteCaptureRequest(
-			request.Context(), deviceID, request.PathValue("requestID"), body.Status, body.ImageID, body.Failure,
-		)
+		var capture store.CaptureRequest
+		var err error
+		if len(body.Images) > 0 {
+			multi, ok := captures.(interface {
+				CompleteCaptureRequestWithImages(context.Context, string, string, string, []store.CaptureImage, string) (store.CaptureRequest, error)
+			})
+			if !ok {
+				writeError(response, http.StatusInternalServerError, "internal_error")
+				return
+			}
+			images := make([]store.CaptureImage, len(body.Images))
+			for index, image := range body.Images {
+				images[index] = store.CaptureImage{ImageID: image.ImageID, DisplayName: image.DisplayName}
+			}
+			capture, err = multi.CompleteCaptureRequestWithImages(request.Context(), deviceID, request.PathValue("requestID"), body.Status, images, body.Failure)
+		} else {
+			capture, err = captures.CompleteCaptureRequest(request.Context(), deviceID, request.PathValue("requestID"), body.Status, body.ImageID, body.Failure)
+		}
 		if errors.Is(err, store.ErrCaptureRequestNotFound) {
 			http.NotFound(response, request)
 			return
@@ -552,9 +620,23 @@ func handleCaptureResult(captures CaptureStore, events *eventHub) authenticatedH
 
 func validCaptureResult(body captureResultRequest) bool {
 	if body.Status == "READY" {
-		return body.ImageID != "" && body.Failure == "" && !strings.ContainsAny(body.ImageID, "/\\")
+		if body.Failure != "" || (body.ImageID == "") == (len(body.Images) == 0) {
+			return false
+		}
+		if body.ImageID != "" {
+			return !strings.ContainsAny(body.ImageID, "/\\")
+		}
+		if len(body.Images) > 8 {
+			return false
+		}
+		for _, image := range body.Images {
+			if image.ImageID == "" || strings.ContainsAny(image.ImageID, "/\\") || utf8.RuneCountInString(image.DisplayName) > 120 {
+				return false
+			}
+		}
+		return true
 	}
-	if body.Status != "FAILED" || body.ImageID != "" {
+	if body.Status != "FAILED" || body.ImageID != "" || len(body.Images) != 0 {
 		return false
 	}
 	for _, allowed := range []string{"DISABLED", "SERVICE_UNAVAILABLE", "LOCKED", "CAPTURE_PROTECTED", "INTERNAL_ERROR"} {

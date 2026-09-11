@@ -5,7 +5,7 @@
     let system = "x86_64-linux"; pkgs = import nixpkgs { inherit system; };
     in {
       devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [ go_1_26 gotools grim libnotify ];
+        packages = with pkgs; [ go_1_26 gotools grim niri libnotify ];
       };
     };
 }

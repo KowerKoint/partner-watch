@@ -257,22 +257,24 @@ private fun RegisteredContent(
             is CaptureUiState.Waiting -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
             is CaptureUiState.Error -> Text(capture.message, color = MaterialTheme.colorScheme.error)
             is CaptureUiState.Received -> {
-                val bitmap = remember(capture.jpeg) {
-                    BitmapFactory.decodeByteArray(capture.jpeg, 0, capture.jpeg.size)?.asImageBitmap()
-                }
-                if (bitmap != null) {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = "取得したスクリーンショット",
-                        modifier = Modifier.fillMaxWidth(),
-                        contentScale = ContentScale.FillWidth,
-                    )
-                    Button(onClick = onSavePhoto, modifier = Modifier.fillMaxWidth()) {
-                        Text("写真コレクションへ保存")
+                capture.images.forEach { received ->
+                    Text(listOf(received.deviceName, received.displayName).filter { it.isNotBlank() }.joinToString(" / "), style = MaterialTheme.typography.titleMedium)
+                    val bitmap = remember(received.jpeg) {
+                        BitmapFactory.decodeByteArray(received.jpeg, 0, received.jpeg.size)?.asImageBitmap()
                     }
-                } else {
-                    Text("画像を表示できませんでした", color = MaterialTheme.colorScheme.error)
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap,
+                            contentDescription = "${received.deviceName}のスクリーンショット",
+                            modifier = Modifier.fillMaxWidth(),
+                            contentScale = ContentScale.FillWidth,
+                        )
+                    } else {
+                        Text("画像を表示できませんでした", color = MaterialTheme.colorScheme.error)
+                    }
                 }
+                Button(onClick = onSavePhoto, modifier = Modifier.fillMaxWidth()) { Text("すべて写真コレクションへ保存") }
+                capture.failures.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
                 capture.savedMessage?.let { Text(it) }
             }
         }

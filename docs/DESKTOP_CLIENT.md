@@ -1,6 +1,6 @@
 # デスクトップクライアント仕様
 
-更新日: 2026-09-10
+更新日: 2026-09-11
 
 ## 1. 対象と目的
 
@@ -46,11 +46,13 @@ Androidは各利用者側に1台とする。Linux端末はAndroidと同じ利用
 - niriが提供する`wlr-screencopy`を`grim`から使用する。
 - 接続中の全出力を列挙し、出力ごとにJPEGを1枚生成する。
 - ポインターは含めない。
-- 1要求の結果は、出力名、幅、高さ、画像IDを持つ画像一覧とする。
+- Androidでの1回の撮影操作を、相手側にある撮影可能な全端末への要求へ展開する。利用者に対象端末の選択UIは表示しない。
+- 各端末の結果は、端末名と、出力名、幅、高さ、画像IDを持つ画像一覧としてまとめる。
 - Androidでは画像を出力名付きの一覧として表示し、各画像を個別に写真コレクションへ保存できるようにする。
 - 1画像は最大16メガピクセル、10 MiB、1要求は最大8画面とする。
 - 画像はAndroidが取得した直後にサーバーから削除し、未取得でも1時間で削除する。
 - 一部の出力だけ失敗した場合は成功画像を返し、すべて失敗した場合だけ要求全体を失敗とする。
+- 一部の端末が失敗またはタイムアウトしても、ほかの端末の成功画像は表示する。
 
 Linux側の撮影受付は既定で無効とする。設定ファイルで有効化した後は、Androidのユーザー補助サービスに相当する追加の対話確認を毎回は行わない。これは端末所有者が常駐サービス設定時に明示的に同意する運用とする。
 
@@ -75,3 +77,17 @@ forward_notifications = false
 - X11、GNOME、KDE、niri以外のWayland compositorの正式対応
 - Windowsクライアント本体
 - iPadクライアント
+
+## 8. 開発版の導入手順
+
+サーバーをこの変更へ更新した後、管理CLIの`device-invite`で相手側Androidと同じslotの追加招待を作る。Linux端末では次の順で登録する。
+
+```console
+cd desktop
+cp config.example.toml ~/.config/partner-watch/config.toml
+# server_url、device_name、accept_captures、forward_notificationsを編集する
+nix develop -c go run ./cmd/partner-watch-desktop enroll --invite-code '<追加端末招待コード>'
+nix develop -c go run ./cmd/partner-watch-desktop run
+```
+
+撮影を受け付ける場合は`accept_captures = true`とする。`niri msg --json outputs`と`grim`がユーザーセッション内で動作する必要がある。常駐化する場合はバイナリを`~/.local/bin/partner-watch-desktop`へ配置し、`desktop/systemd/partner-watch-desktop.service`をsystemdユーザーユニットとして使用する。

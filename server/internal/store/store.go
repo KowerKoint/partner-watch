@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kowerkoint/partner-watch/server/internal/secret"
 	_ "modernc.org/sqlite"
@@ -86,11 +87,19 @@ type CaptureRequest struct {
 	PairID            string
 	RequesterDeviceID string
 	TargetDeviceID    string
+	TargetDeviceName  string
+	TargetPlatform    string
 	Status            string
 	ImageID           string
 	Failure           string
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
+	Images            []CaptureImage
+}
+
+type CaptureImage struct {
+	ImageID     string `json:"imageId"`
+	DisplayName string `json:"displayName"`
 }
 
 type StatusRequest struct {
@@ -183,6 +192,13 @@ CREATE TABLE IF NOT EXISTS capture_requests (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     completed_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS capture_request_images (
+    request_id TEXT NOT NULL REFERENCES capture_requests(id) ON DELETE CASCADE,
+    image_id TEXT NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    display_name TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY(request_id,image_id)
 );
 
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at);
@@ -370,6 +386,10 @@ func (s *Store) RevokeDevice(ctx context.Context, deviceID string) error {
 }
 
 func (s *Store) CreateCaptureRequest(ctx context.Context, requesterDeviceID string) (CaptureRequest, error) {
+	return s.CreateCaptureRequestForTarget(ctx, requesterDeviceID, "")
+}
+
+func (s *Store) CreateCaptureRequestForTarget(ctx context.Context, requesterDeviceID, requestedTargetID string) (CaptureRequest, error) {
 	now := s.now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -378,12 +398,16 @@ func (s *Store) CreateCaptureRequest(ctx context.Context, requesterDeviceID stri
 	defer func() { _ = tx.Rollback() }()
 
 	var pairID, targetDeviceID string
-	err = tx.QueryRowContext(ctx, `
+	if requestedTargetID == "" {
+		err = tx.QueryRowContext(ctx, `
         SELECT requester.pair_id, target.id
         FROM devices requester
-        JOIN devices target ON target.pair_id = requester.pair_id AND target.id <> requester.id
-        WHERE requester.id = ?`, requesterDeviceID,
-	).Scan(&pairID, &targetDeviceID)
+		JOIN devices target ON target.pair_id=requester.pair_id AND target.slot<>requester.slot
+		WHERE requester.id=? AND requester.revoked_at IS NULL AND target.revoked_at IS NULL AND target.platform='ANDROID'
+		ORDER BY target.created_at LIMIT 1`, requesterDeviceID).Scan(&pairID, &targetDeviceID)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT requester.pair_id,target.id FROM devices requester JOIN devices target ON target.pair_id=requester.pair_id AND target.slot<>requester.slot WHERE requester.id=? AND target.id=? AND requester.revoked_at IS NULL AND target.revoked_at IS NULL AND instr(','||target.capabilities||',',',capture,')>0`, requesterDeviceID, requestedTargetID).Scan(&pairID, &targetDeviceID)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return CaptureRequest{}, ErrPartnerNotFound
 	}
@@ -395,8 +419,8 @@ func (s *Store) CreateCaptureRequest(ctx context.Context, requesterDeviceID stri
         SELECT
           COUNT(CASE WHEN created_at > ? THEN 1 END),
           COUNT(*)
-        FROM capture_requests
-        WHERE requester_device_id = ? AND created_at > ?`,
+        FROM audit_events
+        WHERE device_id = ? AND event_type = 'capture.requested' AND created_at > ?`,
 		now.Add(-10*time.Second).Unix(), requesterDeviceID, now.Add(-time.Hour).Unix(),
 	).Scan(&recent, &hourly); err != nil {
 		return CaptureRequest{}, fmt.Errorf("count capture requests: %w", err)
@@ -432,6 +456,88 @@ func (s *Store) CreateCaptureRequest(ctx context.Context, requesterDeviceID stri
 	}, nil
 }
 
+// CreateCaptureRequests creates one request for every capture-capable device on
+// the other side. The whole fan-out counts as one user action for rate limiting.
+func (s *Store) CreateCaptureRequests(ctx context.Context, requesterDeviceID string) ([]CaptureRequest, error) {
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin capture requests: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var pairID string
+	var requesterSlot int
+	if err := tx.QueryRowContext(ctx, `SELECT pair_id, slot FROM devices WHERE id=? AND revoked_at IS NULL`, requesterDeviceID).Scan(&pairID, &requesterSlot); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrPartnerNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("find capture requester: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+        SELECT id, name, platform FROM devices
+        WHERE pair_id=? AND slot<>? AND revoked_at IS NULL
+          AND instr(','||capabilities||',', ',capture,')>0
+        ORDER BY created_at, id`, pairID, requesterSlot)
+	if err != nil {
+		return nil, fmt.Errorf("find capture targets: %w", err)
+	}
+	var targets []CaptureRequest
+	for rows.Next() {
+		var target CaptureRequest
+		if err := rows.Scan(&target.TargetDeviceID, &target.TargetDeviceName, &target.TargetPlatform); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		return nil, ErrPartnerNotFound
+	}
+
+	var recent, hourly int
+	if err := tx.QueryRowContext(ctx, `
+        SELECT COUNT(CASE WHEN created_at > ? THEN 1 END), COUNT(*)
+        FROM audit_events
+        WHERE device_id=? AND event_type='capture.requested' AND created_at>?`,
+		now.Add(-10*time.Second).Unix(), requesterDeviceID, now.Add(-time.Hour).Unix(),
+	).Scan(&recent, &hourly); err != nil {
+		return nil, fmt.Errorf("count capture requests: %w", err)
+	}
+	if recent > 0 || hourly >= 60 {
+		return nil, ErrRateLimited
+	}
+
+	expiresAt := now.Add(time.Minute)
+	for index := range targets {
+		id, err := secret.Generate(16)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO capture_requests
+            (id,pair_id,requester_device_id,target_device_id,status,created_at,expires_at)
+            VALUES(?,?,?,?,'PENDING',?,?)`, id, pairID, requesterDeviceID, targets[index].TargetDeviceID, now.Unix(), expiresAt.Unix()); err != nil {
+			return nil, fmt.Errorf("insert capture request: %w", err)
+		}
+		targets[index].ID = id
+		targets[index].PairID = pairID
+		targets[index].RequesterDeviceID = requesterDeviceID
+		targets[index].Status = "PENDING"
+		targets[index].CreatedAt = now
+		targets[index].ExpiresAt = expiresAt
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(pair_id,device_id,event_type,created_at) VALUES(?,?,'capture.requested',?)`, pairID, requesterDeviceID, now.Unix()); err != nil {
+		return nil, fmt.Errorf("record capture request: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit capture requests: %w", err)
+	}
+	return targets, nil
+}
+
 func (s *Store) CompleteCaptureRequest(
 	ctx context.Context,
 	targetDeviceID string,
@@ -440,10 +546,18 @@ func (s *Store) CompleteCaptureRequest(
 	imageID string,
 	failure string,
 ) (CaptureRequest, error) {
+	images := []CaptureImage(nil)
+	if imageID != "" {
+		images = []CaptureImage{{ImageID: imageID}}
+	}
+	return s.CompleteCaptureRequestWithImages(ctx, targetDeviceID, requestID, status, images, failure)
+}
+
+func (s *Store) CompleteCaptureRequestWithImages(ctx context.Context, targetDeviceID, requestID, status string, images []CaptureImage, failure string) (CaptureRequest, error) {
 	if status != "READY" && status != "FAILED" {
 		return CaptureRequest{}, ErrCaptureRequestNotFound
 	}
-	if (status == "READY") != (imageID != "") || (status == "FAILED") != (failure != "") {
+	if (status == "READY") != (len(images) > 0) || (status == "FAILED") != (failure != "") || len(images) > 8 {
 		return CaptureRequest{}, ErrCaptureRequestNotFound
 	}
 	now := s.now().UTC()
@@ -467,22 +581,33 @@ func (s *Store) CompleteCaptureRequest(
 		return CaptureRequest{}, fmt.Errorf("find capture request: %w", err)
 	}
 	if status == "READY" {
-		var exists int
-		err := tx.QueryRowContext(ctx, `
+		seen := map[string]bool{}
+		for _, captureImage := range images {
+			if captureImage.ImageID == "" || seen[captureImage.ImageID] || utf8.RuneCountInString(captureImage.DisplayName) > 120 {
+				return CaptureRequest{}, ErrCaptureRequestNotFound
+			}
+			seen[captureImage.ImageID] = true
+			var exists int
+			err := tx.QueryRowContext(ctx, `
             SELECT 1 FROM images
             WHERE id = ? AND uploader_device_id = ? AND pair_id = ? AND expires_at > ?`,
-			imageID, targetDeviceID, result.PairID, now.Unix(),
-		).Scan(&exists)
-		if errors.Is(err, sql.ErrNoRows) {
-			return CaptureRequest{}, ErrCaptureRequestNotFound
+				captureImage.ImageID, targetDeviceID, result.PairID, now.Unix(),
+			).Scan(&exists)
+			if errors.Is(err, sql.ErrNoRows) {
+				return CaptureRequest{}, ErrCaptureRequestNotFound
+			}
+			if err != nil {
+				return CaptureRequest{}, fmt.Errorf("validate capture image: %w", err)
+			}
 		}
-		if err != nil {
-			return CaptureRequest{}, fmt.Errorf("validate capture image: %w", err)
-		}
+	}
+	legacyImageID := ""
+	if len(images) == 1 {
+		legacyImageID = images[0].ImageID
 	}
 	update, err := tx.ExecContext(ctx, `
         UPDATE capture_requests SET status = ?, image_id = NULLIF(?, ''), failure = NULLIF(?, ''), completed_at = ?
-        WHERE id = ? AND status = 'PENDING'`, status, imageID, failure, now.Unix(), requestID,
+		WHERE id = ? AND status = 'PENDING'`, status, legacyImageID, failure, now.Unix(), requestID,
 	)
 	if err != nil {
 		return CaptureRequest{}, fmt.Errorf("complete capture request: %w", err)
@@ -490,6 +615,11 @@ func (s *Store) CompleteCaptureRequest(
 	rows, err := update.RowsAffected()
 	if err != nil || rows != 1 {
 		return CaptureRequest{}, ErrCaptureRequestNotFound
+	}
+	for position, item := range images {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO capture_request_images(request_id,image_id,display_name,position) VALUES(?,?,?,?)`, requestID, item.ImageID, item.DisplayName, position); err != nil {
+			return CaptureRequest{}, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO audit_events (pair_id, device_id, event_type, created_at)
@@ -500,7 +630,7 @@ func (s *Store) CompleteCaptureRequest(
 	if err := tx.Commit(); err != nil {
 		return CaptureRequest{}, fmt.Errorf("commit capture result: %w", err)
 	}
-	result.Status, result.ImageID, result.Failure = status, imageID, failure
+	result.Status, result.ImageID, result.Failure, result.Images = status, legacyImageID, failure, images
 	result.CreatedAt, result.ExpiresAt = time.Unix(createdAt, 0).UTC(), time.Unix(expiresAt, 0).UTC()
 	return result, nil
 }
@@ -603,9 +733,10 @@ func (s *Store) TakeImage(ctx context.Context, deviceID, imageID string) (Image,
 	err = tx.QueryRowContext(ctx, `
         SELECT images.file_name, images.created_at, images.expires_at
         FROM images
-        JOIN devices ON devices.pair_id = images.pair_id
-        WHERE images.id = ? AND devices.id = ?
-          AND images.uploader_device_id <> devices.id AND images.expires_at > ?`,
+        JOIN devices receiver ON receiver.pair_id = images.pair_id
+        JOIN devices uploader ON uploader.id = images.uploader_device_id
+        WHERE images.id = ? AND receiver.id = ? AND receiver.revoked_at IS NULL
+          AND uploader.slot <> receiver.slot AND images.expires_at > ?`,
 		imageID, deviceID, now.Unix(),
 	).Scan(&fileName, &createdAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -992,6 +1123,21 @@ func (s *Store) CaptureRequestForRequester(ctx context.Context, deviceID, reques
 	v.Failure = failure.String
 	v.CreatedAt = time.Unix(created, 0).UTC()
 	v.ExpiresAt = time.Unix(expires, 0).UTC()
+	rows, err := s.db.QueryContext(ctx, `SELECT image_id,display_name FROM capture_request_images WHERE request_id=? ORDER BY position`, requestID)
+	if err != nil {
+		return CaptureRequest{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var image CaptureImage
+		if err := rows.Scan(&image.ImageID, &image.DisplayName); err != nil {
+			return CaptureRequest{}, err
+		}
+		v.Images = append(v.Images, image)
+	}
+	if err := rows.Err(); err != nil {
+		return CaptureRequest{}, err
+	}
 	return v, nil
 }
 

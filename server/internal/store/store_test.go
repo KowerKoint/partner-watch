@@ -100,6 +100,38 @@ func TestImageCanOnlyBeTakenOnceByPartner(t *testing.T) {
 	}
 }
 
+func TestCaptureRequestFansOutToEveryPartnerCaptureDevice(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, second := enrollTestPair(t, s)
+	invite, err := s.CreateDeviceInvitation(ctx, first.PairID, second.Slot, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	linux, err := s.EnrollDeviceWithMetadata(ctx, invite.Token, "niri PC", "linux-capture-key", "LINUX", "notification.send,capture")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requests, err := s.CreateCaptureRequests(ctx, first.DeviceID)
+	if err != nil {
+		t.Fatalf("CreateCaptureRequests: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d; want 2", len(requests))
+	}
+	targets := map[string]string{}
+	for _, request := range requests {
+		targets[request.TargetDeviceID] = request.TargetDeviceName
+	}
+	if targets[second.DeviceID] != "Galaxy" || targets[linux.DeviceID] != "niri PC" {
+		t.Fatalf("targets = %#v", targets)
+	}
+	if _, err := s.CreateCaptureRequests(ctx, first.DeviceID); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("second fan-out error = %v; want ErrRateLimited", err)
+	}
+}
+
 func TestExpiredImagesAreDeleted(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
