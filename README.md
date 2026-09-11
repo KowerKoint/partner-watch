@@ -85,6 +85,35 @@ partner-watch-desktop run
 
 資格情報は`~/.local/state/partner-watch/state.json`へパーミッション`0600`で保存される。通知転送は設定の`forward_notifications = true`で明示的に有効化する。
 
+flakeパッケージは`desktop/`で`nix build`または`nix run .# -- run`として利用できる。実行時に必要な`grim`と`niri`もパッケージのPATHへ含まれる。
+
+常用時はHome Managerモジュールを推奨する。Nix設定のinputへ`github:KowerKoint/partner-watch?dir=desktop`を追加し、次のように設定する。
+
+```nix
+{
+  imports = [ inputs.partner-watch.homeManagerModules.default ];
+  services.partner-watch-desktop = {
+    enable = true;
+    serverUrl = "https://partner-watch.example.com";
+    deviceName = "My niri PC";
+    acceptCaptures = true;
+    forwardNotifications = true;
+  };
+}
+```
+
+Home Managerを使わない場合は`inputs.partner-watch.nixosModules.default`をNixOS設定へimportし、上記に加えて`user = "my-user";`を指定する。
+
+設定反映後、サービスを開始する前に一度だけ追加端末招待コードで登録する。Home Manager版では`partner-watch-desktop enroll --invite-code ...`、NixOS版では次の専用ラッパーを使う。
+
+```sh
+partner-watch-desktop-enroll --invite-code '<追加端末招待コード>'
+systemctl --user start partner-watch-desktop.service
+systemctl --user status partner-watch-desktop.service
+```
+
+資格情報ファイルがまだ存在しない間、ユーザーサービスは起動しない。
+
 ## 本番運用
 
 `deploy/compose.yaml`はアプリケーションサーバーだけを起動する。TLSはホストですでに稼働しているCaddyが終端し、コンテナのループバック公開ポートへ転送する。

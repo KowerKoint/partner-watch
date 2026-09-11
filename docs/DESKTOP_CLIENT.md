@@ -90,4 +90,6 @@ nix develop -c go run ./cmd/partner-watch-desktop enroll --invite-code '<追加�
 nix develop -c go run ./cmd/partner-watch-desktop run
 ```
 
-撮影を受け付ける場合は`accept_captures = true`とする。`niri msg --json outputs`と`grim`がユーザーセッション内で動作する必要がある。常駐化する場合はバイナリを`~/.local/bin/partner-watch-desktop`へ配置し、`desktop/systemd/partner-watch-desktop.service`をsystemdユーザーユニットとして使用する。
+撮影を受け付ける場合は`accept_captures = true`とする。`niri msg --json outputs`と`grim`がユーザーセッション内で動作する必要がある。
+
+常用時は`desktop/flake.nix`が公開するHome Managerモジュールを推奨する。Home Managerを使わないNixOS向けにも`nixosModules.default`を提供する。どちらもsystemdユーザーサービスを作り、資格情報が`~/.local/state/partner-watch/state.json`へ作成された後だけ起動する。具体的なflake設定と登録コマンドは`README.md`を参照する。
