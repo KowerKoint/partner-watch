@@ -31,17 +31,29 @@ type pairListOutput struct {
 }
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "pair-create" && os.Args[1] != "pair-delete" && os.Args[1] != "pair-list") {
-		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create|pair-list|pair-delete [options]")
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: partner-watch-admin pair-create|pair-list|pair-delete|device-invite|device-list|device-revoke [options]")
 		os.Exit(2)
 	}
-	if os.Args[1] == "pair-delete" {
+	switch os.Args[1] {
+	case "pair-delete":
 		deletePair(os.Args[2:])
 		return
-	}
-	if os.Args[1] == "pair-list" {
+	case "pair-list":
 		listPairs(os.Args[2:])
 		return
+	case "device-invite":
+		inviteDevice(os.Args[2:])
+		return
+	case "device-list":
+		listDevices(os.Args[2:])
+		return
+	case "device-revoke":
+		revokeDevice(os.Args[2:])
+		return
+	case "pair-create":
+	default:
+		fatal("unknown command")
 	}
 
 	flags := flag.NewFlagSet("pair-create", flag.ExitOnError)
@@ -81,6 +93,83 @@ func main() {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(result); err != nil {
+		fatal(err.Error())
+	}
+}
+
+func inviteDevice(args []string) {
+	flags := flag.NewFlagSet("device-invite", flag.ExitOnError)
+	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
+	pairID := flags.String("pair-id", "", "pair ID")
+	slot := flags.Int("slot", 0, "person side (1 or 2)")
+	serverURL := flags.String("server-url", os.Getenv("PW_PUBLIC_URL"), "public HTTPS server URL")
+	ttl := flags.Duration("ttl", 15*time.Minute, "invitation validity")
+	_ = flags.Parse(args)
+	origin, err := normalizeServerURL(*serverURL)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if *ttl <= 0 || *ttl > 24*time.Hour {
+		fatal("ttl must be greater than zero and at most 24h")
+	}
+	db, err := store.Open(*dataDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() { _ = db.Close() }()
+	invite, err := db.CreateDeviceInvitation(context.Background(), *pairID, *slot, time.Now().Add(*ttl))
+	if err != nil {
+		fatal(err.Error())
+	}
+	writeIndented(map[string]any{"pairId": invite.PairID, "slot": invite.Slot, "serverUrl": origin, "inviteCode": invite.Token, "expiresAt": invite.ExpiresAt.Format(time.RFC3339)})
+}
+
+func listDevices(args []string) {
+	flags := flag.NewFlagSet("device-list", flag.ExitOnError)
+	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
+	pairID := flags.String("pair-id", "", "pair ID")
+	_ = flags.Parse(args)
+	db, err := store.Open(*dataDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() { _ = db.Close() }()
+	items, err := db.ListDevices(context.Background(), *pairID)
+	if err != nil {
+		fatal(err.Error())
+	}
+	writeIndented(map[string]any{"devices": items})
+}
+
+func revokeDevice(args []string) {
+	flags := flag.NewFlagSet("device-revoke", flag.ExitOnError)
+	dataDir := flags.String("data-dir", envOrDefault("PW_DATA_DIR", "/var/lib/partner-watch"), "database directory")
+	deviceID := flags.String("device-id", "", "device ID")
+	yes := flags.Bool("yes", false, "skip confirmation")
+	_ = flags.Parse(args)
+	if !*yes {
+		fmt.Printf("Revoke device %s? [y/N] ", *deviceID)
+		var answer string
+		_, _ = fmt.Scanln(&answer)
+		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+			return
+		}
+	}
+	db, err := store.Open(*dataDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.RevokeDevice(context.Background(), *deviceID); err != nil {
+		fatal(err.Error())
+	}
+	fmt.Printf("revoked device %s\n", *deviceID)
+}
+
+func writeIndented(value any) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
 		fatal(err.Error())
 	}
 }

@@ -31,6 +31,9 @@ type healthResponse struct {
 type Enroller interface {
 	EnrollDevice(ctx context.Context, invitationToken, deviceName, publicKey string) (store.Enrollment, error)
 }
+type MetadataEnroller interface {
+	EnrollDeviceWithMetadata(context.Context, string, string, string, string, string) (store.Enrollment, error)
+}
 
 type Authenticator interface {
 	AuthenticateDevice(ctx context.Context, credential string) (string, error)
@@ -72,9 +75,11 @@ type ForwardedNotificationStore interface {
 }
 
 type enrollmentRequest struct {
-	InvitationToken string `json:"invitationToken"`
-	DeviceName      string `json:"deviceName"`
-	PublicKey       string `json:"publicKey"`
+	InvitationToken string   `json:"invitationToken"`
+	DeviceName      string   `json:"deviceName"`
+	PublicKey       string   `json:"publicKey"`
+	Platform        string   `json:"platform,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -639,12 +644,18 @@ func handleEnrollment(enroller Enroller) http.HandlerFunc {
 			return
 		}
 
-		enrollment, err := enroller.EnrollDevice(
-			request.Context(),
-			body.InvitationToken,
-			body.DeviceName,
-			body.PublicKey,
-		)
+		var enrollment store.Enrollment
+		var err error
+		if body.Platform != "" {
+			metadata, ok := enroller.(MetadataEnroller)
+			if !ok {
+				writeError(response, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			enrollment, err = metadata.EnrollDeviceWithMetadata(request.Context(), body.InvitationToken, body.DeviceName, body.PublicKey, body.Platform, strings.Join(body.Capabilities, ","))
+		} else {
+			enrollment, err = enroller.EnrollDevice(request.Context(), body.InvitationToken, body.DeviceName, body.PublicKey)
+		}
 		if errors.Is(err, store.ErrInvitationNotFound) {
 			http.NotFound(response, request)
 			return
@@ -669,6 +680,22 @@ func validEnrollment(request enrollmentRequest) bool {
 	}
 	if !utf8.ValidString(request.DeviceName) || utf8.RuneCountInString(request.DeviceName) < 1 || utf8.RuneCountInString(request.DeviceName) > 80 {
 		return false
+	}
+	if request.Platform != "" {
+		if request.Platform != "LINUX" && request.Platform != "WINDOWS" && request.Platform != "IPAD" {
+			return false
+		}
+		allowed := map[string]bool{"notification.send": true, "notification.receive": true, "capture": true, "status": true}
+		if len(request.Capabilities) == 0 || len(request.Capabilities) > len(allowed) {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, capability := range request.Capabilities {
+			if !allowed[capability] || seen[capability] {
+				return false
+			}
+			seen[capability] = true
+		}
 	}
 	publicKeyBytes, err := base64.RawURLEncoding.DecodeString(request.PublicKey)
 	if err != nil {

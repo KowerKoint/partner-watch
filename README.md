@@ -94,4 +94,24 @@ docker compose -f deploy/compose.yaml run --rm \
   pair-delete --pair-id "PAIR_ID"
 ```
 
+既存ペアの同じ利用者側へLinuxなどの追加端末を登録する場合は、単回利用の招待コードを発行する。
+
+```sh
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server \
+  device-invite --pair-id "PAIR_ID" --slot 1
+```
+
+端末一覧の確認と端末単位の失効は次のように行う。
+
+```sh
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server \
+  device-list --pair-id "PAIR_ID"
+
+docker compose -f deploy/compose.yaml run --rm \
+  --entrypoint /partner-watch-admin server \
+  device-revoke --device-id "DEVICE_ID"
+```
+
 秘密情報、SQLite DB、一時画像、Firebaseサービスアカウント、Android署名鍵はGitへ追加しない。

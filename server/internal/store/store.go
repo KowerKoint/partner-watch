@@ -56,6 +56,24 @@ type Enrollment struct {
 	Credential string
 }
 
+type DeviceInvitation struct {
+	PairID, Token string
+	Slot          int
+	ExpiresAt     time.Time
+}
+
+type DeviceSummary struct {
+	DeviceID     string     `json:"deviceId"`
+	PairID       string     `json:"pairId"`
+	Name         string     `json:"name"`
+	Platform     string     `json:"platform"`
+	Capabilities string     `json:"capabilities"`
+	Slot         int        `json:"slot"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	LastSeenAt   *time.Time `json:"lastSeenAt,omitempty"`
+	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+}
+
 type Image struct {
 	ID        string
 	Data      []byte
@@ -117,8 +135,7 @@ CREATE TABLE IF NOT EXISTS invitations (
     slot INTEGER NOT NULL CHECK (slot IN (1, 2)),
     expires_at INTEGER NOT NULL,
     used_at INTEGER,
-    created_at INTEGER NOT NULL,
-    UNIQUE (pair_id, slot)
+    created_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -129,7 +146,10 @@ CREATE TABLE IF NOT EXISTS devices (
     public_key TEXT NOT NULL UNIQUE,
     credential_hash BLOB NOT NULL UNIQUE,
     created_at INTEGER NOT NULL,
-    UNIQUE (pair_id, slot)
+    platform TEXT NOT NULL DEFAULT 'ANDROID',
+    capabilities TEXT NOT NULL DEFAULT 'notification.send,notification.receive,capture,status',
+    last_seen_at INTEGER,
+    revoked_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -269,14 +289,84 @@ func (s *Store) AuthenticateDevice(ctx context.Context, credential string) (stri
 	}
 	hash := secret.Hash(credential)
 	var deviceID string
-	err := s.db.QueryRowContext(ctx, "SELECT id FROM devices WHERE credential_hash = ?", hash[:]).Scan(&deviceID)
+	err := s.db.QueryRowContext(ctx, "SELECT id FROM devices WHERE credential_hash = ? AND revoked_at IS NULL", hash[:]).Scan(&deviceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrUnauthorized
 	}
 	if err != nil {
 		return "", fmt.Errorf("authenticate device: %w", err)
 	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE devices SET last_seen_at=? WHERE id=?`, s.now().UTC().Unix(), deviceID)
 	return deviceID, nil
+}
+
+func (s *Store) CreateDeviceInvitation(ctx context.Context, pairID string, slot int, expiresAt time.Time) (DeviceInvitation, error) {
+	if slot != 1 && slot != 2 || !expiresAt.After(s.now().UTC()) {
+		return DeviceInvitation{}, errors.New("invalid device invitation")
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM pairs WHERE id=?`, strings.TrimSpace(pairID)).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return DeviceInvitation{}, ErrPairNotFound
+	} else if err != nil {
+		return DeviceInvitation{}, err
+	}
+	token, err := secret.Generate(32)
+	if err != nil {
+		return DeviceInvitation{}, err
+	}
+	hash := secret.Hash(token)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO invitations(token_hash,pair_id,slot,expires_at,created_at) VALUES(?,?,?,?,?)`, hash[:], pairID, slot, expiresAt.UTC().Unix(), s.now().UTC().Unix())
+	if err != nil {
+		return DeviceInvitation{}, err
+	}
+	return DeviceInvitation{PairID: pairID, Token: token, Slot: slot, ExpiresAt: expiresAt.UTC()}, nil
+}
+
+func (s *Store) ListDevices(ctx context.Context, pairID string) ([]DeviceSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,pair_id,slot,name,platform,capabilities,created_at,last_seen_at,revoked_at FROM devices WHERE pair_id=? ORDER BY slot,created_at`, pairID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []DeviceSummary
+	for rows.Next() {
+		var item DeviceSummary
+		var created int64
+		var seen, revoked sql.NullInt64
+		if err := rows.Scan(&item.DeviceID, &item.PairID, &item.Slot, &item.Name, &item.Platform, &item.Capabilities, &created, &seen, &revoked); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = time.Unix(created, 0).UTC()
+		if seen.Valid {
+			v := time.Unix(seen.Int64, 0).UTC()
+			item.LastSeenAt = &v
+		}
+		if revoked.Valid {
+			v := time.Unix(revoked.Int64, 0).UTC()
+			item.RevokedAt = &v
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) RevokeDevice(ctx context.Context, deviceID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL`, s.now().UTC().Unix(), strings.TrimSpace(deviceID))
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrUnauthorized
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM device_fcm_tokens WHERE device_id=?`, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateCaptureRequest(ctx context.Context, requesterDeviceID string) (CaptureRequest, error) {
@@ -591,7 +681,7 @@ func (s *Store) CreateForwardedNotification(ctx context.Context, sourceDeviceID 
 	} else if err != nil {
 		return ForwardedNotification{}, nil, fmt.Errorf("find notification source: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM devices WHERE pair_id=? AND slot<>? ORDER BY created_at`, pairID, sourceSlot)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM devices WHERE pair_id=? AND slot<>? AND revoked_at IS NULL AND instr(','||capabilities||',', ',notification.receive,')>0 ORDER BY created_at`, pairID, sourceSlot)
 	if err != nil {
 		return ForwardedNotification{}, nil, fmt.Errorf("find notification targets: %w", err)
 	}
@@ -696,10 +786,64 @@ func (s *Store) initialize(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
+	if err := s.migrateMultiDevice(ctx); err != nil {
+		return err
+	}
 	for name, definition := range map[string]string{"location_status": "TEXT NOT NULL DEFAULT 'DISABLED'", "latitude": "REAL", "longitude": "REAL", "accuracy_meters": "REAL", "location_observed_at": "INTEGER", "location_source": "TEXT"} {
 		if _, err := s.db.ExecContext(ctx, "ALTER TABLE status_snapshots ADD COLUMN "+name+" "+definition); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate status snapshots: %w", err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) migrateMultiDevice(ctx context.Context) error {
+	var invitationsSQL, devicesSQL string
+	if err := s.db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'`).Scan(&invitationsSQL); err != nil {
+		return fmt.Errorf("inspect invitations schema: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='devices'`).Scan(&devicesSQL); err != nil {
+		return fmt.Errorf("inspect devices schema: %w", err)
+	}
+	normalizedInvitations := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(invitationsSQL, " ", ""), "\n", ""))
+	normalizedDevices := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(devicesSQL, " ", ""), "\n", ""))
+	oldUnique := strings.Contains(normalizedInvitations, "unique(pair_id,slot)") || strings.Contains(normalizedDevices, "unique(pair_id,slot)")
+	if !oldUnique {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() { _, _ = s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`) }()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	statements := []string{
+		`CREATE TABLE invitations_new (token_hash BLOB PRIMARY KEY, pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE, slot INTEGER NOT NULL CHECK(slot IN (1,2)), expires_at INTEGER NOT NULL, used_at INTEGER, created_at INTEGER NOT NULL)`,
+		`INSERT INTO invitations_new SELECT token_hash,pair_id,slot,expires_at,used_at,created_at FROM invitations`,
+		`CREATE TABLE devices_new (id TEXT PRIMARY KEY, pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE, slot INTEGER NOT NULL CHECK(slot IN (1,2)), name TEXT NOT NULL, public_key TEXT NOT NULL UNIQUE, credential_hash BLOB NOT NULL UNIQUE, created_at INTEGER NOT NULL, platform TEXT NOT NULL DEFAULT 'ANDROID', capabilities TEXT NOT NULL DEFAULT 'notification.send,notification.receive,capture,status', last_seen_at INTEGER, revoked_at INTEGER)`,
+		`INSERT INTO devices_new(id,pair_id,slot,name,public_key,credential_hash,created_at) SELECT id,pair_id,slot,name,public_key,credential_hash,created_at FROM devices`,
+		`DROP TABLE invitations`, `DROP TABLE devices`,
+		`ALTER TABLE invitations_new RENAME TO invitations`, `ALTER TABLE devices_new RENAME TO devices`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("multi-device migration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit multi-device migration: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return err
+	}
+	var violation string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA foreign_key_check`).Scan(&violation); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check multi-device migration: %w", err)
+	} else if err == nil {
+		return errors.New("multi-device migration produced a foreign key violation")
 	}
 	return nil
 }
@@ -1050,6 +1194,10 @@ func (s *Store) EnrollDevice(
 	deviceName string,
 	publicKey string,
 ) (Enrollment, error) {
+	return s.EnrollDeviceWithMetadata(ctx, invitationToken, deviceName, publicKey, "ANDROID", "notification.send,notification.receive,capture,status")
+}
+
+func (s *Store) EnrollDeviceWithMetadata(ctx context.Context, invitationToken, deviceName, publicKey, platform, capabilities string) (Enrollment, error) {
 	now := s.now().UTC()
 	invitationHash := secret.Hash(invitationToken)
 
@@ -1085,9 +1233,9 @@ func (s *Store) EnrollDevice(
 	credentialHash := secret.Hash(credential)
 
 	if _, err := tx.ExecContext(ctx, `
-        INSERT INTO devices (id, pair_id, slot, name, public_key, credential_hash, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		deviceID, pairID, slot, deviceName, publicKey, credentialHash[:], now.Unix(),
+        INSERT INTO devices (id, pair_id, slot, name, public_key, credential_hash, created_at, platform, capabilities)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		deviceID, pairID, slot, deviceName, publicKey, credentialHash[:], now.Unix(), platform, capabilities,
 	); err != nil {
 		return Enrollment{}, ErrInvitationNotFound
 	}

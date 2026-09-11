@@ -3,12 +3,44 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestOpenMigratesExistingSingleDeviceSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "partner-watch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE pairs(id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE invitations(token_hash BLOB PRIMARY KEY,pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,slot INTEGER NOT NULL,expires_at INTEGER NOT NULL,used_at INTEGER,created_at INTEGER NOT NULL,UNIQUE(pair_id,slot));
+CREATE TABLE devices(id TEXT PRIMARY KEY,pair_id TEXT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,slot INTEGER NOT NULL,name TEXT NOT NULL,public_key TEXT NOT NULL UNIQUE,credential_hash BLOB NOT NULL UNIQUE,created_at INTEGER NOT NULL,UNIQUE(pair_id,slot));
+INSERT INTO pairs VALUES('pair','Existing',1);
+INSERT INTO devices VALUES('android','pair',1,'Pixel','key',X'01',1);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open migration: %v", err)
+	}
+	defer s.Close()
+	devices, err := s.ListDevices(context.Background(), "pair")
+	if err != nil || len(devices) != 1 || devices[0].Platform != "ANDROID" {
+		t.Fatalf("devices=%+v err=%v", devices, err)
+	}
+	invite, err := s.CreateDeviceInvitation(context.Background(), "pair", 1, time.Now().Add(time.Hour))
+	if err != nil || invite.Token == "" {
+		t.Fatalf("additional invitation=%+v err=%v", invite, err)
+	}
+}
 
 func TestCreatePairAndEnrollBothDevices(t *testing.T) {
 	store := openTestStore(t)
@@ -285,6 +317,36 @@ func TestInvitationCanOnlyBeUsedOnce(t *testing.T) {
 	_, err = store.EnrollDevice(ctx, pair.Invitations[0], "Other", "key-two")
 	if !errors.Is(err, ErrInvitationNotFound) {
 		t.Fatalf("second enrollment error = %v, want ErrInvitationNotFound", err)
+	}
+}
+
+func TestAdditionalDeviceInvitationAndRevocation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first, _ := enrollTestPair(t, s)
+	invite, err := s.CreateDeviceInvitation(ctx, first.PairID, 1, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CreateDeviceInvitation: %v", err)
+	}
+	linux, err := s.EnrollDeviceWithMetadata(ctx, invite.Token, "niri PC", "linux-key", "LINUX", "notification.send,capture")
+	if err != nil {
+		t.Fatalf("EnrollDeviceWithMetadata: %v", err)
+	}
+	if linux.Slot != 1 {
+		t.Fatalf("slot=%d", linux.Slot)
+	}
+	devices, err := s.ListDevices(ctx, first.PairID)
+	if err != nil || len(devices) != 3 {
+		t.Fatalf("devices=%v err=%v", devices, err)
+	}
+	if devices[1].Platform != "LINUX" || devices[1].Capabilities != "notification.send,capture" {
+		t.Fatalf("linux=%+v", devices[1])
+	}
+	if err := s.RevokeDevice(ctx, linux.DeviceID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	if _, err := s.AuthenticateDevice(ctx, linux.Credential); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("authentication after revoke=%v", err)
 	}
 }
 

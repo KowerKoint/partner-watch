@@ -324,6 +324,17 @@ components:
         publicKey:
           type: string
           description: Unpadded base64url-encoded X.509 SubjectPublicKeyInfo for a P-256 ECDSA key.
+        platform:
+          type: string
+          enum: [LINUX, WINDOWS, IPAD]
+          description: Omit for the current Android client.
+        capabilities:
+          type: array
+          uniqueItems: true
+          maxItems: 4
+          items:
+            type: string
+            enum: [notification.send, notification.receive, capture, status]
     EnrollmentResponse:
       type: object
       additionalProperties: false
